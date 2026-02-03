@@ -469,11 +469,11 @@ pub fn runSelector(allocator: std.mem.Allocator, api_key: []const u8) !?[]const 
 
     std.debug.print("Found {d} models. Launching selector...\n", .{models.len});
 
-    // Initialize state - we own this and pass a pointer to the app
+    // Initialize state - app holds a pointer, so we own and manage state directly
     var state = try SelectorState.init(allocator, models);
     defer state.deinit();
 
-    // Create and run the app
+    // Create and run the app (passes pointer to our state, no copying)
     var app = App(SelectorState).init(.{
         .state = &state,
         .update = update,
