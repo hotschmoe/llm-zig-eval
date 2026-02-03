@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const json = std.json;
+const tokens = @import("../core/tokens.zig");
 
 pub const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -18,12 +19,8 @@ pub const Message = struct {
     };
 };
 
-/// Token usage from API response
-pub const TokenUsage = struct {
-    prompt_tokens: u32,
-    completion_tokens: u32,
-    total_tokens: u32,
-};
+/// Re-export TokenUsage from tokens module
+pub const TokenUsage = tokens.TokenUsage;
 
 /// Response from OpenRouter API
 pub const ChatResponse = struct {
@@ -138,7 +135,7 @@ pub const Client = struct {
         errdefer response_writer.deinit();
 
         // Use fetch API - Zig 0.15 style
-        const fetch_result = self.http_client.fetch(.{
+        const result = try self.http_client.fetch(.{
             .location = .{ .url = OPENROUTER_API_URL },
             .method = .POST,
             .extra_headers = &.{
@@ -150,8 +147,6 @@ pub const Client = struct {
             .payload = body,
             .response_writer = &response_writer.writer,
         });
-
-        const result = try fetch_result;
 
         // Check status code
         if (result.status != .ok) {

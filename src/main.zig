@@ -260,14 +260,14 @@ fn runModelBenchmark(
 
         if (best_status == .pass) {
             passed += 1;
-            // Store passed solution for council judging
+            // Transfer ownership of prompt and code to council for later judging
             if (enable_council) {
                 if (best_code) |code| {
                     try passed_solutions.append(allocator, .{
-                        .prompt = prompt, // Transfer ownership
+                        .prompt = prompt,
                         .code = code,
                     });
-                    best_code = null; // Ownership transferred
+                    best_code = null; // Ownership transferred to passed_solutions
                 }
             }
         }

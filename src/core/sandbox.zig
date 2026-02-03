@@ -76,8 +76,8 @@ pub const Sandbox = struct {
     /// Create output directory structure for a model
     pub fn createModelDir(self: *Sandbox, model_id: []const u8) ![]const u8 {
         // Sanitize model ID for filesystem (replace / with _)
-        var safe_name = try self.allocator.alloc(u8, model_id.len);
-        errdefer self.allocator.free(safe_name);
+        const safe_name = try self.allocator.alloc(u8, model_id.len);
+        defer self.allocator.free(safe_name);
 
         for (model_id, 0..) |c, i| {
             safe_name[i] = if (c == '/' or c == '\\' or c == ':') '_' else c;
@@ -87,12 +87,10 @@ pub const Sandbox = struct {
         const model_dir = try std.fs.path.join(self.allocator, &.{ self.output_dir, safe_name });
         errdefer self.allocator.free(model_dir);
 
-        // Create directory
+        // Create directory (ignore if already exists)
         fs.cwd().makePath(model_dir) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };
-
-        self.allocator.free(safe_name);
 
         return model_dir;
     }

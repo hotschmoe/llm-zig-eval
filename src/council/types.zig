@@ -73,14 +73,7 @@ pub const ConsensusResult = struct {
         }
 
         pub fn toString(self: Rating) []const u8 {
-            return switch (self) {
-                .S => "S",
-                .A => "A",
-                .B => "B",
-                .C => "C",
-                .D => "D",
-                .F => "F",
-            };
+            return @tagName(self);
         }
     };
 
