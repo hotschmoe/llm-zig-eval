@@ -23,13 +23,12 @@ pub const MODEL_COSTS = [_]ModelCost{
     .{ .model_id = "openai/gpt-4o-mini", .input_cost = 0.15, .output_cost = 0.6 },
     .{ .model_id = "openai/gpt-4-turbo", .input_cost = 10.0, .output_cost = 30.0 },
     // Google
-    .{ .model_id = "google/gemini-pro-1.5", .input_cost = 2.5, .output_cost = 7.5 },
-    .{ .model_id = "google/gemini-flash-1.5", .input_cost = 0.075, .output_cost = 0.3 },
+    .{ .model_id = "google/gemini-1.5-pro", .input_cost = 2.5, .output_cost = 7.5 },
+    .{ .model_id = "google/gemini-1.5-flash", .input_cost = 0.075, .output_cost = 0.3 },
     // Meta
-    .{ .model_id = "meta-llama/llama-3-70b-instruct", .input_cost = 0.52, .output_cost = 0.75 },
-    .{ .model_id = "meta-llama/llama-3-8b-instruct", .input_cost = 0.06, .output_cost = 0.06 },
+    .{ .model_id = "meta-llama/llama-3.1-70b-instruct", .input_cost = 0.52, .output_cost = 0.75 },
+    .{ .model_id = "meta-llama/llama-3.1-8b-instruct", .input_cost = 0.06, .output_cost = 0.06 },
     // DeepSeek
-    .{ .model_id = "deepseek/deepseek-coder", .input_cost = 0.14, .output_cost = 0.28 },
     .{ .model_id = "deepseek/deepseek-chat", .input_cost = 0.14, .output_cost = 0.28 },
 };
 

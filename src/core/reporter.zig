@@ -97,6 +97,11 @@ pub const Report = struct {
 
         // Add rows
         for (self.results.items) |result| {
+            std.debug.print("DEBUG TABLE: {s} score={d}/{d}\n", .{
+                result.model_id,
+                result.score,
+                result.total_problems,
+            });
             // Truncate model name if too long
             const name_len = @min(result.model_id.len, 30);
             const model_name = result.model_id[0..name_len];
