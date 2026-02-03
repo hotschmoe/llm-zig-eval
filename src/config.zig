@@ -82,14 +82,20 @@ pub fn parseArgs(allocator: std.mem.Allocator) !Config {
     _ = args.skip();
 
     var models_str: ?[]const u8 = null;
+    var models_file_path: ?[]const u8 = null;
     var runs: u32 = 1;
     var council = false;
     var output_format = Config.OutputFormat.pretty;
     var parallel: u32 = 4;
+    var launch_selector = false;
 
     while (args.next()) |arg| {
         if (std.mem.startsWith(u8, arg, "--models=")) {
             models_str = arg["--models=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--models-file=")) {
+            models_file_path = arg["--models-file=".len..];
+        } else if (std.mem.eql(u8, arg, "--select")) {
+            launch_selector = true;
         } else if (std.mem.startsWith(u8, arg, "--runs=")) {
             const num_str = arg["--runs=".len..];
             runs = try std.fmt.parseInt(u32, num_str, 10);
@@ -133,26 +139,53 @@ pub fn parseArgs(allocator: std.mem.Allocator) !Config {
     };
     errdefer allocator.free(api_key);
 
-    // Parse models list
-    if (models_str == null) {
-        std.debug.print("Error: --models argument is required\n", .{});
-        return error.MissingModels;
+    // Build model list from file and/or CLI
+    var model_list: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (model_list.items) |model| {
+            allocator.free(model);
+        }
+        model_list.deinit(allocator);
     }
 
-    var model_list: std.ArrayList([]const u8) = .empty;
-    errdefer model_list.deinit(allocator);
+    // Load models from file first (if specified)
+    if (models_file_path) |file_path| {
+        const file_models = parseModelsFile(allocator, file_path) catch |err| {
+            switch (err) {
+                error.FileNotFound => {
+                    std.debug.print("Error: Models file not found: {s}\n", .{file_path});
+                    return error.ModelsFileNotFound;
+                },
+                else => {
+                    std.debug.print("Error: Failed to read models file: {s}\n", .{file_path});
+                    return error.ModelsFileReadError;
+                },
+            }
+        };
+        for (file_models) |model| {
+            try model_list.append(allocator, model);
+        }
+        allocator.free(file_models);
+    }
 
-    var it = std.mem.splitScalar(u8, models_str.?, ',');
-    while (it.next()) |model| {
-        const trimmed = std.mem.trim(u8, model, " ");
-        if (trimmed.len > 0) {
-            // Duplicate to own the memory (args will be freed after parseArgs returns)
-            const owned = try allocator.dupe(u8, trimmed);
-            try model_list.append(allocator, owned);
+    // Append CLI models (if specified)
+    if (models_str) |ms| {
+        var it = std.mem.splitScalar(u8, ms, ',');
+        while (it.next()) |model| {
+            const trimmed = std.mem.trim(u8, model, " ");
+            if (trimmed.len > 0) {
+                const owned = try allocator.dupe(u8, trimmed);
+                try model_list.append(allocator, owned);
+            }
         }
     }
 
+    // If no models specified and --select not given, return error for TUI trigger
     if (model_list.items.len == 0) {
+        if (launch_selector) {
+            return error.NoModelsSpecified;
+        }
+        std.debug.print("Error: No models specified. Use --models=, --models-file=, or --select\n", .{});
         return error.MissingModels;
     }
 
@@ -168,7 +201,7 @@ pub fn parseArgs(allocator: std.mem.Allocator) !Config {
 }
 
 /// Load a value from .env file
-fn loadEnvFile(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
+pub fn loadEnvFile(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
     const file = std.fs.cwd().openFile(".env", .{}) catch |err| {
         if (err == error.FileNotFound) return null;
         return err;
@@ -195,6 +228,31 @@ fn loadEnvFile(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
     return null;
 }
 
+/// Parse models from a file (one model per line, # for comments)
+pub fn parseModelsFile(allocator: std.mem.Allocator, path: []const u8) ![]const []const u8 {
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
+
+    var models: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (models.items) |model| {
+            allocator.free(model);
+        }
+        models.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        try models.append(allocator, try allocator.dupe(u8, trimmed));
+    }
+    return try models.toOwnedSlice(allocator);
+}
+
 fn printUsage() void {
     const usage =
         \\llm-zig-eval - Benchmark LLMs on Zig programming tasks
@@ -202,18 +260,26 @@ fn printUsage() void {
         \\Usage: llm-zig-eval [options]
         \\
         \\Options:
-        \\  --models=MODEL1,MODEL2    Comma-separated list of model IDs (required)
+        \\  --models=MODEL1,MODEL2    Comma-separated list of model IDs
+        \\  --models-file=PATH        Read models from file (one per line, # comments)
+        \\  --select                  Launch interactive model selector
         \\  --runs=N                  Number of runs per model per problem (default: 1)
         \\  --council                 Enable Council of Judges scoring
         \\  --output=FORMAT           Output format: pretty, json (default: pretty)
         \\  --parallel=N              Max concurrent API requests (default: 4)
         \\  --help, -h                Show this help message
         \\
+        \\Model Selection:
+        \\  Models can be specified via --models=, --models-file=, or both (combined).
+        \\  Use --select to launch an interactive TUI for model selection.
+        \\
         \\Environment:
         \\  OPENROUTER_API_KEY        Your OpenRouter API key (required)
         \\
         \\Examples:
         \\  llm-zig-eval --models=anthropic/claude-3.5-sonnet,openai/gpt-4o
+        \\  llm-zig-eval --models-file=my_models.txt --runs=3
+        \\  llm-zig-eval --select
         \\  llm-zig-eval --models=anthropic/claude-3-haiku --runs=3 --council
         \\
     ;
@@ -225,6 +291,9 @@ pub const ConfigError = error{
     HelpRequested,
     MissingApiKey,
     MissingModels,
+    NoModelsSpecified,
+    ModelsFileNotFound,
+    ModelsFileReadError,
 };
 
 // Tests
@@ -238,4 +307,45 @@ test "getModelCost finds known model" {
 test "getModelCost returns null for unknown model" {
     const cost = getModelCost("unknown/model");
     try std.testing.expect(cost == null);
+}
+
+test "parseModelsFile parses valid file" {
+    const allocator = std.testing.allocator;
+
+    // Create a test file
+    const test_content =
+        \\# Test models file
+        \\anthropic/claude-3.5-sonnet
+        \\
+        \\openai/gpt-4o
+        \\# another comment
+        \\google/gemini-1.5-pro
+    ;
+
+    const test_path = "/tmp/test_models.txt";
+    {
+        const file = try std.fs.cwd().createFile(test_path, .{});
+        defer file.close();
+        try file.writeAll(test_content);
+    }
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    const models = try parseModelsFile(allocator, test_path);
+    defer {
+        for (models) |model| {
+            allocator.free(model);
+        }
+        allocator.free(models);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), models.len);
+    try std.testing.expectEqualStrings("anthropic/claude-3.5-sonnet", models[0]);
+    try std.testing.expectEqualStrings("openai/gpt-4o", models[1]);
+    try std.testing.expectEqualStrings("google/gemini-1.5-pro", models[2]);
+}
+
+test "parseModelsFile returns error for missing file" {
+    const allocator = std.testing.allocator;
+    const result = parseModelsFile(allocator, "/nonexistent/path/models.txt");
+    try std.testing.expectError(error.FileNotFound, result);
 }

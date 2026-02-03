@@ -1,0 +1,20 @@
+# Example models file for llm-zig-eval
+# One model ID per line, lines starting with # are comments
+
+# Anthropic Claude models
+anthropic/claude-3.5-sonnet
+anthropic/claude-3-haiku
+
+# OpenAI GPT models
+openai/gpt-4o
+openai/gpt-4o-mini
+
+# Google Gemini
+google/gemini-1.5-pro
+google/gemini-1.5-flash
+
+# DeepSeek
+deepseek/deepseek-chat
+
+# Meta Llama
+# meta-llama/llama-3.1-70b-instruct

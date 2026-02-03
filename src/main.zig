@@ -4,6 +4,7 @@
 const std = @import("std");
 const rich = @import("rich_zig");
 const lib = @import("llm_zig_eval");
+const model_selector = @import("tui/model_selector.zig");
 
 const Config = lib.Config;
 const Client = lib.Client;
@@ -122,7 +123,13 @@ pub fn main() !void {
             error.MissingModels => {
                 std.debug.print("\nHint: Specify models to benchmark\n", .{});
                 std.debug.print("  llm-zig-eval --models=anthropic/claude-3.5-sonnet,openai/gpt-4o\n", .{});
+                std.debug.print("  llm-zig-eval --models-file=models.txt\n", .{});
+                std.debug.print("  llm-zig-eval --select  (interactive selector)\n", .{});
                 return err;
+            },
+            error.NoModelsSpecified => {
+                // Launch interactive model selector
+                return launchModelSelector(allocator);
             },
             else => return err,
         }
@@ -576,6 +583,105 @@ fn printResultPanel(console: *rich.Console, model_id: []const u8, score: u32, to
         rich.Panel.err(console.allocator, panel_msg);
 
     try console.printRenderable(panel);
+}
+
+/// Launch interactive model selector and run benchmark with selected models
+fn launchModelSelector(allocator: std.mem.Allocator) !void {
+    // Get API key first
+    const api_key = blk: {
+        if (std.process.getEnvVarOwned(allocator, "OPENROUTER_API_KEY")) |key| {
+            break :blk key;
+        } else |env_err| {
+            if (env_err != error.EnvironmentVariableNotFound) {
+                return env_err;
+            }
+        }
+        // Try .env file
+        if (config.loadEnvFile(allocator, "OPENROUTER_API_KEY") catch null) |key| {
+            break :blk key;
+        }
+        std.debug.print("Error: OPENROUTER_API_KEY not found\n", .{});
+        std.debug.print("Set it in environment or .env file before using --select\n", .{});
+        return error.MissingApiKey;
+    };
+    defer allocator.free(api_key);
+
+    // Run the selector
+    const selected_models = model_selector.runSelector(allocator, api_key) catch |err| {
+        std.debug.print("Model selector failed: {}\n", .{err});
+        return err;
+    };
+
+    if (selected_models == null) {
+        std.debug.print("No models selected. Exiting.\n", .{});
+        return;
+    }
+
+    const models = selected_models.?;
+    defer {
+        for (models) |m| {
+            allocator.free(m);
+        }
+        allocator.free(models);
+    }
+
+    if (models.len == 0) {
+        std.debug.print("No models selected. Exiting.\n", .{});
+        return;
+    }
+
+    std.debug.print("Selected {d} model(s). Running benchmark...\n", .{models.len});
+
+    // Build a config with selected models and run the benchmark
+    var cfg = Config{
+        .models = models,
+        .runs = 1,
+        .council = false,
+        .output_format = .pretty,
+        .parallel = 4,
+        .api_key = api_key,
+        .allocator = allocator,
+    };
+    // Don't deinit - we manage the memory ourselves above
+
+    // Initialize rich console
+    var console = rich.Console.init(allocator);
+    defer console.deinit();
+
+    // Print banner
+    try printBanner(&console);
+
+    // Initialize report
+    var report = Report.init(allocator);
+    defer report.deinit();
+
+    // Initialize thread-safe report wrapper
+    var ts_report = ThreadSafeReport.init(&report);
+
+    // Initialize progress state
+    var progress = ProgressState.init();
+    defer progress.deinit(allocator);
+
+    // Determine parallelism
+    const num_models = cfg.models.len;
+    const effective_parallel = @min(cfg.parallel, @as(u32, @intCast(num_models)));
+
+    // Print execution info
+    try console.print("\n");
+    var info_buf: [128]u8 = undefined;
+    const info_msg = std.fmt.bufPrint(&info_buf, "Benchmarking {d} model(s) with parallelism={d}\n", .{ num_models, effective_parallel }) catch "Benchmarking...\n";
+    try console.print(info_msg);
+
+    const use_parallel = effective_parallel > 1 and num_models > 1;
+    if (use_parallel) {
+        try runParallelBenchmarks(allocator, &cfg, &ts_report, &progress, &console);
+    } else {
+        try runSequentialBenchmarks(allocator, &cfg, &report, &console);
+    }
+
+    // Render final report
+    try console.print("\n");
+    try report.renderTable(&console);
 }
 
 test "main module tests" {
