@@ -2,6 +2,7 @@
 //! Formats benchmark results as styled tables or JSON.
 
 const std = @import("std");
+const rich = @import("rich_zig");
 const tokens = @import("tokens.zig");
 const sandbox = @import("sandbox.zig");
 
@@ -55,16 +56,8 @@ pub const Report = struct {
         try self.results.append(self.allocator, result);
     }
 
-    /// Render report as a styled table
-    pub fn renderTable(self: *Report, writer: anytype) !void {
-        // Header
-        try writer.writeAll("\n");
-        try writer.writeAll("╔══════════════════════════════════════════════════════════════════════════════╗\n");
-        try writer.writeAll("║                           BENCHMARK REPORT                                   ║\n");
-        try writer.writeAll("╠══════════════════════════════════════════════════════════════════════════════╣\n");
-        try writer.writeAll("║ MODEL                         │ TIME    │ SCORE │ COST     │ LOC  │ RATING  ║\n");
-        try writer.writeAll("╠═══════════════════════════════╪═════════╪═══════╪══════════╪══════╪═════════╣\n");
-
+    /// Render report as a styled table using rich_zig
+    pub fn renderTable(self: *Report, console: *rich.Console) !void {
         // Sort results by score (descending), then by cost (ascending)
         std.mem.sort(ModelResult, self.results.items, {}, struct {
             fn lessThan(_: void, a: ModelResult, b: ModelResult) bool {
@@ -73,15 +66,29 @@ pub const Report = struct {
             }
         }.lessThan);
 
-        // Rows
+        // Create table with columns
+        var table = rich.Table.init(self.allocator);
+        defer table.deinit();
+
+        _ = table.withTitle("BENCHMARK REPORT")
+            .withBoxStyle(.rounded)
+            .addColumn("MODEL")
+            .addColumn("TIME")
+            .addColumn("SCORE")
+            .addColumn("COST")
+            .addColumn("LOC")
+            .addColumn("RATING");
+
+        // Add rows
         for (self.results.items) |result| {
             // Truncate model name if too long
-            var model_name: [30]u8 = [_]u8{' '} ** 30;
             const name_len = @min(result.model_id.len, 30);
-            @memcpy(model_name[0..name_len], result.model_id[0..name_len]);
+            const model_name = result.model_id[0..name_len];
 
             // Format time
             const time_s = @as(f64, @floatFromInt(result.total_time_ms)) / 1000.0;
+            var time_buf: [16]u8 = undefined;
+            const time_str = std.fmt.bufPrint(&time_buf, "{d:.1}s", .{time_s}) catch "?";
 
             // Calculate total LOC
             var total_loc: usize = 0;
@@ -89,48 +96,42 @@ pub const Report = struct {
                 total_loc += prob.loc;
             }
 
+            // Format score
+            var score_buf: [8]u8 = undefined;
+            const score_str = std.fmt.bufPrint(&score_buf, "{d}/{d}", .{ result.score, result.total_problems }) catch "?";
+
             // Format cost
-            var cost_buf: [10]u8 = undefined;
+            var cost_buf: [12]u8 = undefined;
             const cost_str = formatCostBuf(result.cost, &cost_buf);
+
+            // Format LOC
+            var loc_buf: [8]u8 = undefined;
+            const loc_str = std.fmt.bufPrint(&loc_buf, "{d}", .{total_loc}) catch "?";
 
             // Rating
             const rating = result.rating orelse "N/A";
 
-            try writer.print("║ {s} │ {d:>5.1}s │ {d}/{d}   │ {s:<8} │ {d:>4} │ {s:<7} ║\n", .{
-                model_name,
-                time_s,
-                result.score,
-                result.total_problems,
-                cost_str,
-                total_loc,
-                rating,
-            });
+            try table.addRow(&[_][]const u8{ model_name, time_str, score_str, cost_str, loc_str, rating });
 
-            // Problem breakdown
+            // Add problem breakdown as sub-rows
             for (result.problems) |prob| {
                 const status_icon = switch (prob.status) {
-                    .pass => "✓",
-                    .compile_error => "✗ compile",
-                    .test_error => "✗ test",
-                    .timeout => "⏱ timeout",
+                    .pass => "[pass]",
+                    .compile_error => "[compile err]",
+                    .test_error => "[test err]",
+                    .timeout => "[timeout]",
                 };
-                const retry_str = if (prob.retries > 0) blk: {
-                    var buf: [16]u8 = undefined;
-                    break :blk std.fmt.bufPrint(&buf, "(retries:{d})", .{prob.retries}) catch "";
-                } else "";
-                try writer.print("║   └─ {s:<20} {s:<10} {s:<12}                     ║\n", .{
-                    prob.problem_name,
-                    status_icon,
-                    retry_str,
-                });
+                var prob_buf: [48]u8 = undefined;
+                const prob_str = if (prob.retries > 0)
+                    std.fmt.bufPrint(&prob_buf, "  {s} {s} (retries:{d})", .{ prob.problem_name, status_icon, prob.retries }) catch "?"
+                else
+                    std.fmt.bufPrint(&prob_buf, "  {s} {s}", .{ prob.problem_name, status_icon }) catch "?";
+                try table.addRow(&[_][]const u8{ prob_str, "", "", "", "", "" });
             }
         }
 
-        try writer.writeAll("╚══════════════════════════════════════════════════════════════════════════════╝\n");
-
-        // Legend
-        try writer.writeAll("\n");
-        try writer.writeAll("Legend: SCORE = passed problems, LOC = lines of code, RATING = council score\n");
+        try console.printRenderable(table);
+        try console.print("\nLegend: SCORE = passed problems, LOC = lines of code, RATING = council score");
     }
 
     /// Render report as JSON

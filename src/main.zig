@@ -2,6 +2,7 @@
 //! CLI orchestrator for benchmarking LLMs on Zig programming tasks.
 
 const std = @import("std");
+const rich = @import("rich_zig");
 const lib = @import("llm_zig_eval");
 
 const Config = lib.Config;
@@ -54,8 +55,12 @@ pub fn main() !void {
     };
     defer cfg.deinit();
 
+    // Initialize rich console
+    var console = rich.Console.init(allocator);
+    defer console.deinit();
+
     // Print banner
-    printBanner();
+    try printBanner(&console);
 
     // Initialize OpenRouter client
     var client = Client.init(allocator, cfg.api_key);
@@ -88,15 +93,17 @@ pub fn main() !void {
         try report.addResult(model_result);
     }
 
-    // Render report to stdout
-    const stdout_file = std.fs.File.stdout();
-    var write_buf: [4096]u8 = undefined;
-    var stdout = stdout_file.writer(&write_buf);
+    // Render report
     switch (cfg.output_format) {
-        .pretty => try report.renderTable(&stdout.interface),
-        .json => try report.renderJson(&stdout.interface),
+        .pretty => try report.renderTable(&console),
+        .json => {
+            const stdout_file = std.fs.File.stdout();
+            var buf: [4096]u8 = undefined;
+            var stdout = stdout_file.writer(&buf);
+            try report.renderJson(&stdout.interface);
+            try stdout.interface.flush();
+        },
     }
-    try stdout.interface.flush();
 }
 
 /// Tracks a passed solution for council judging
@@ -326,19 +333,17 @@ fn runModelBenchmark(
     };
 }
 
-fn printBanner() void {
-    const banner =
+fn printBanner(console: *rich.Console) !void {
+    const banner_text =
+        \\LLM  ZIG  EVAL
         \\
-        \\╔═══════════════════════════════════════════════════════════╗
-        \\║     ╦   ╦   ╔╦╗    ╔═╗  ╦  ╔═╗    ╔═╗  ╦  ╦  ╔═╗  ╦       ║
-        \\║     ║   ║   ║║║    ╔═╝  ║  ║ ╦    ║╣   ╚╗╔╝  ╠═╣  ║       ║
-        \\║     ╩═╝ ╩═╝ ╩ ╩    ╚═╝  ╩  ╚═╝    ╚═╝   ╚╝   ╩ ╩  ╩═╝     ║
-        \\║                                                           ║
-        \\║    Find which LLM writes the best Zig code.               ║
-        \\╚═══════════════════════════════════════════════════════════╝
-        \\
+        \\Find which LLM writes the best Zig code.
     ;
-    std.debug.print("{s}\n", .{banner});
+    const panel = rich.Panel.fromText(console.allocator, banner_text)
+        .withTitle("Benchmark Suite")
+        .withWidth(50)
+        .rounded();
+    try console.printRenderable(panel);
 }
 
 test "main module tests" {
