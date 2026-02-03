@@ -1,0 +1,13 @@
+Write a Zig function that checks if a number is prime.
+
+Requirements:
+- Function signature: `pub fn isPrime(n: u32) bool`
+- Return true if n is a prime number, false otherwise
+- 0 and 1 are NOT prime
+- 2 is the smallest prime
+
+Example outputs:
+- isPrime(2) -> true
+- isPrime(4) -> false
+- isPrime(17) -> true
+- isPrime(1) -> false

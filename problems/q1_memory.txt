@@ -1,0 +1,45 @@
+# Problem 1: Arena Allocator from Scratch
+
+## Task
+
+Create a `MiniArena` struct that manages a fixed 1024-byte buffer for bump allocation.
+
+## Requirements
+
+1. **Struct Definition**: Create a `MiniArena` struct with:
+   - An internal 1024-byte buffer
+   - A position tracker for the next allocation
+
+2. **init() MiniArena**: Returns an initialized arena ready for allocations
+
+3. **alloc(self: *MiniArena, size: usize) ![]u8**:
+   - Returns an 8-byte aligned slice of the requested size
+   - Advances the internal position
+   - Returns `error.OutOfMemory` when the buffer cannot satisfy the allocation
+
+4. **reset(self: *MiniArena) void**:
+   - Rewinds the position to the start
+   - Allows the buffer to be reused
+
+## Constraints
+
+- All allocations MUST be 8-byte aligned
+- Do not use any allocator from `std` - manage the buffer manually
+- The buffer is exactly 1024 bytes, no more
+
+## Example Usage
+
+```zig
+var arena = MiniArena.init();
+
+const slice1 = try arena.alloc(100);  // Returns 100-byte slice
+const slice2 = try arena.alloc(200);  // Returns 200-byte slice
+
+arena.reset();  // Now the full 1024 bytes are available again
+
+const slice3 = try arena.alloc(1000);  // Works after reset
+```
+
+## Your Solution
+
+Provide ONLY the Zig code for the `MiniArena` struct. Place all code in a single code block.

@@ -1,0 +1,70 @@
+# Problem 2: Mock TCP Socket with Threading
+
+## Task
+
+Create a `MockSocket` struct that simulates network connections using threads.
+
+## Requirements
+
+1. **Struct Definition**: Create a `MockSocket` struct with:
+   - Connection state tracking (connected/disconnected)
+   - Thread handle for async connection
+   - Mutex for thread-safe state access
+
+2. **init() MockSocket**: Returns an initialized socket in disconnected state
+
+3. **connect(self: *MockSocket, address: []const u8) !void**:
+   - Spawns a thread to simulate connection delay (100ms using `std.time.sleep`)
+   - If address is "bad_host", returns `error.ConnectionRefused`
+   - Sets connected state to true on success
+   - Must be thread-safe
+
+4. **isConnected(self: *MockSocket) bool**:
+   - Returns the current connection state
+   - Must be thread-safe (use mutex)
+
+5. **waitForConnection(self: *MockSocket) void**:
+   - Blocks until the connection thread completes
+   - Joins the spawned thread
+
+6. **deinit(self: *MockSocket) void**:
+   - Cleans up any resources (joins thread if needed)
+
+## Constraints
+
+- Use `std.Thread` for spawning connection threads
+- Use `std.Thread.Mutex` for thread-safe state access
+- Connection delay must be 100 milliseconds (100_000_000 nanoseconds)
+- Multiple sockets connecting in parallel should complete in ~100ms total, not 100ms × N
+
+## Example Usage
+
+```zig
+var sockets: [5]MockSocket = undefined;
+for (&sockets) |*sock| {
+    sock.* = MockSocket.init();
+}
+
+// Start all connections in parallel
+for (&sockets, 0..) |*sock, i| {
+    const addr = if (i == 4) "bad_host" else "good_host";
+    sock.connect(addr) catch |err| {
+        // Handle error.ConnectionRefused for bad_host
+    };
+}
+
+// Wait for all to complete
+for (&sockets) |*sock| {
+    sock.waitForConnection();
+}
+
+// Check states
+for (&sockets) |*sock| {
+    _ = sock.isConnected();
+    sock.deinit();
+}
+```
+
+## Your Solution
+
+Provide ONLY the Zig code for the `MockSocket` struct. Place all code in a single code block.

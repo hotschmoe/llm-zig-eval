@@ -1,0 +1,64 @@
+# Problem 3: JSON-to-Struct using Comptime Reflection
+
+## Task
+
+Create a `jsonToStruct` function that parses simple JSON strings into Zig structs using comptime reflection.
+
+## Requirements
+
+1. **Function Signature**:
+   ```zig
+   pub fn jsonToStruct(comptime T: type, json: []const u8) !T
+   ```
+
+2. **Comptime Reflection**:
+   - Use `@typeInfo(T)` to iterate struct fields at comptime
+   - Generate parsing code for each field based on its type
+
+3. **Supported Field Types**:
+   - `u8`, `u16`, `u32`, `u64` - Parse as integers
+   - `i8`, `i16`, `i32`, `i64` - Parse as signed integers
+   - `[]const u8` - Parse as string (caller must manage memory)
+
+4. **JSON Format**:
+   - Simple flat objects only: `{"key": value, "key2": value2}`
+   - Strings are double-quoted: `"hello"`
+   - Numbers are unquoted: `42`
+   - Whitespace between tokens is allowed
+
+5. **Error Handling**:
+   - Return `error.InvalidJson` for malformed input
+   - Return `error.MissingField` if a required field is not found
+   - Return `error.InvalidNumber` if number parsing fails
+
+## Constraints
+
+- Do NOT use `std.json` - implement parsing manually
+- Use `@typeInfo` and comptime features, not runtime reflection
+- The function must work with any struct type (generic)
+
+## Example Usage
+
+```zig
+const Point = struct {
+    x: u32,
+    y: u32,
+};
+
+const Person = struct {
+    name: []const u8,
+    age: u32,
+};
+
+// Parse Point
+const p = try jsonToStruct(Point, "{\"x\": 10, \"y\": 20}");
+// p.x == 10, p.y == 20
+
+// Parse Person
+const person = try jsonToStruct(Person, "{\"name\": \"Alice\", \"age\": 30}");
+// person.name == "Alice", person.age == 30
+```
+
+## Your Solution
+
+Provide ONLY the Zig code for the `jsonToStruct` function and any helper functions it needs. Place all code in a single code block.
