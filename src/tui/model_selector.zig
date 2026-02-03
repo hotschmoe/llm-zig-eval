@@ -224,8 +224,16 @@ fn update(state: *SelectorState, event: Event) Action {
                                 state.quit_without_select = true;
                                 return Action.quit_action;
                             },
+                            // Ctrl+H is backspace in some terminals
+                            'h', 8 => {
+                                if (state.filter_state.handleKey(.{ .code = .backspace })) {
+                                    state.rebuildDisplayItems() catch {};
+                                }
+                                return Action.none_action;
+                            },
                             else => {},
                         }
+                        return Action.none_action;
                     } else if (c == ' ') {
                         state.toggleSelection();
                         return Action.none_action;
@@ -276,6 +284,12 @@ fn update(state: *SelectorState, event: Event) Action {
                     return Action.none_action;
                 },
                 .backspace => {
+                    if (state.filter_state.handleKey(key)) {
+                        state.rebuildDisplayItems() catch {};
+                    }
+                    return Action.none_action;
+                },
+                .delete => {
                     if (state.filter_state.handleKey(key)) {
                         state.rebuildDisplayItems() catch {};
                     }
@@ -477,30 +491,38 @@ pub fn runSelector(allocator: std.mem.Allocator, api_key: []const u8) !?[]const 
 
     std.debug.print("Found {d} models. Launching selector...\n", .{models.len});
 
-    // Initialize state
-    var state = try SelectorState.init(allocator, models);
-    defer state.deinit();
+    // Initialize state - app takes ownership via copy, so we use app.state after init
+    const initial_state = try SelectorState.init(allocator, models);
 
     // Create and run the app
     var app = App(SelectorState).init(.{
-        .state = state,
+        .state = initial_state,
         .update = update,
         .view = view,
         .alternate_screen = true,
     });
+
+    // CRITICAL: Re-initialize filter_state to point to app's copy of filter_buffer.
+    // When SelectorState is copied into the app, the filter_buffer array is copied,
+    // but filter_state.buffer (a slice) still points to the original buffer.
+    // This fixes text input working with the correct buffer.
+    app.state.filter_state = TextInputState.init(&app.state.filter_buffer);
+
+    // Deinit the app's copy of state (not initial_state, which shares memory)
+    defer app.state.deinit();
 
     app.run(allocator) catch |err| {
         std.debug.print("TUI error: {}\n", .{err});
         return error.TuiError;
     };
 
-    // Check result
-    if (state.quit_without_select) {
+    // Check result from app's state (update() modifies app.state, not initial_state)
+    if (app.state.quit_without_select) {
         return null;
     }
 
-    if (state.submitted) {
-        return try state.getSelectedModels();
+    if (app.state.submitted) {
+        return try app.state.getSelectedModels();
     }
 
     return null;

@@ -86,6 +86,13 @@ pub const Report = struct {
         var table = rich.Table.init(self.allocator);
         defer table.deinit();
 
+        // Track allocated strings for cleanup
+        var allocated_strings: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (allocated_strings.items) |s| self.allocator.free(s);
+            allocated_strings.deinit(self.allocator);
+        }
+
         _ = table.withTitle("BENCHMARK REPORT")
             .withBoxStyle(.rounded)
             .addColumn("MODEL")
@@ -97,19 +104,14 @@ pub const Report = struct {
 
         // Add rows
         for (self.results.items) |result| {
-            std.debug.print("DEBUG TABLE: {s} score={d}/{d}\n", .{
-                result.model_id,
-                result.score,
-                result.total_problems,
-            });
             // Truncate model name if too long
             const name_len = @min(result.model_id.len, 30);
             const model_name = result.model_id[0..name_len];
 
-            // Format time
+            // Format time - allocate to avoid buffer reuse issues
             const time_s = @as(f64, @floatFromInt(result.total_time_ms)) / 1000.0;
-            var time_buf: [16]u8 = undefined;
-            const time_str = std.fmt.bufPrint(&time_buf, "{d:.1}s", .{time_s}) catch "?";
+            const time_str = try std.fmt.allocPrint(self.allocator, "{d:.1}s", .{time_s});
+            try allocated_strings.append(self.allocator, time_str);
 
             // Calculate total LOC
             var total_loc: usize = 0;
@@ -117,17 +119,17 @@ pub const Report = struct {
                 total_loc += prob.loc;
             }
 
-            // Format score
-            var score_buf: [8]u8 = undefined;
-            const score_str = std.fmt.bufPrint(&score_buf, "{d}/{d}", .{ result.score, result.total_problems }) catch "?";
+            // Format score - allocate
+            const score_str = try std.fmt.allocPrint(self.allocator, "{d}/{d}", .{ result.score, result.total_problems });
+            try allocated_strings.append(self.allocator, score_str);
 
-            // Format cost
-            var cost_buf: [12]u8 = undefined;
-            const cost_str = formatCostBuf(result.cost, &cost_buf);
+            // Format cost - allocate
+            const cost_str = try std.fmt.allocPrint(self.allocator, "${d:.4}", .{result.cost});
+            try allocated_strings.append(self.allocator, cost_str);
 
-            // Format LOC
-            var loc_buf: [8]u8 = undefined;
-            const loc_str = std.fmt.bufPrint(&loc_buf, "{d}", .{total_loc}) catch "?";
+            // Format LOC - allocate
+            const loc_str = try std.fmt.allocPrint(self.allocator, "{d}", .{total_loc});
+            try allocated_strings.append(self.allocator, loc_str);
 
             // Rating
             const rating = result.rating orelse "N/A";
@@ -142,11 +144,11 @@ pub const Report = struct {
                     .test_error => "[test err]",
                     .timeout => "[timeout]",
                 };
-                var prob_buf: [48]u8 = undefined;
                 const prob_str = if (prob.retries > 0)
-                    std.fmt.bufPrint(&prob_buf, "  {s} {s} (retries:{d})", .{ prob.problem_name, status_icon, prob.retries }) catch "?"
+                    try std.fmt.allocPrint(self.allocator, "  {s} {s} (retries:{d})", .{ prob.problem_name, status_icon, prob.retries })
                 else
-                    std.fmt.bufPrint(&prob_buf, "  {s} {s}", .{ prob.problem_name, status_icon }) catch "?";
+                    try std.fmt.allocPrint(self.allocator, "  {s} {s}", .{ prob.problem_name, status_icon });
+                try allocated_strings.append(self.allocator, prob_str);
                 try table.addRow(&[_][]const u8{ prob_str, "", "", "", "", "" });
             }
         }
@@ -195,11 +197,6 @@ pub const Report = struct {
     }
 };
 
-fn formatCostBuf(cost: f64, buf: []u8) []const u8 {
-    const result = std.fmt.bufPrint(buf, "${d:.4}", .{cost}) catch "$???";
-    return result;
-}
-
 // Tests
 test "report initialization" {
     const allocator = std.testing.allocator;
@@ -209,9 +206,3 @@ test "report initialization" {
     try std.testing.expectEqual(@as(usize, 0), report.results.items.len);
 }
 
-test "format cost buffer" {
-    var buf: [10]u8 = undefined;
-
-    const small = formatCostBuf(0.0042, &buf);
-    try std.testing.expect(std.mem.indexOf(u8, small, "$0.0042") != null);
-}

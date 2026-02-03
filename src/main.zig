@@ -187,12 +187,6 @@ fn runParallelBenchmarks(
 
     for (tasks) |*task| {
         if (task.result) |result| {
-            std.debug.print("DEBUG: {s} score={d}/{d} problems.len={d}\n", .{
-                task.model_id,
-                result.score,
-                result.total_problems,
-                result.problems.len,
-            });
             try ts_report.addResult(result);
             success_count += 1;
             try printResultPanel(console, task.model_id, result.score, result.total_problems);
