@@ -128,7 +128,6 @@ pub fn main() !void {
                 return err;
             },
             error.NoModelsSpecified => {
-                // Launch interactive model selector
                 return launchModelSelector(allocator);
             },
             else => return err,
@@ -136,53 +135,7 @@ pub fn main() !void {
     };
     defer cfg.deinit();
 
-    // Initialize rich console
-    var console = rich.Console.init(allocator);
-    defer console.deinit();
-
-    // Print banner
-    try printBanner(&console);
-
-    // Initialize report
-    var report = Report.init(allocator);
-    defer report.deinit();
-
-    // Initialize thread-safe report wrapper
-    var ts_report = ThreadSafeReport.init(&report);
-
-    // Initialize progress state
-    var progress = ProgressState.init();
-    defer progress.deinit(allocator);
-
-    // Determine parallelism (min of parallel setting and model count)
-    const num_models = cfg.models.len;
-    const effective_parallel = @min(cfg.parallel, @as(u32, @intCast(num_models)));
-
-    // Print execution info
-    try console.print("\n");
-    var info_buf: [128]u8 = undefined;
-    const info_msg = std.fmt.bufPrint(&info_buf, "Benchmarking {d} model(s) with parallelism={d}\n", .{ num_models, effective_parallel }) catch "Benchmarking...\n";
-    try console.print(info_msg);
-
-    const use_parallel = effective_parallel > 1 and num_models > 1;
-    if (use_parallel) {
-        try runParallelBenchmarks(allocator, &cfg, &ts_report, &progress, &console);
-    } else {
-        try runSequentialBenchmarks(allocator, &cfg, &report, &console);
-    }
-
-    // Render final report
-    try console.print("\n");
-    switch (cfg.output_format) {
-        .pretty => try report.renderTable(&console),
-        .json => {
-            const stdout_file = std.fs.File.stdout();
-            var buf: [4096]u8 = undefined;
-            var stdout = stdout_file.writer(&buf);
-            try report.renderJson(&stdout.interface);
-            try stdout.interface.flush();
-        },
-    }
+    try runBenchmarkSuite(allocator, &cfg);
 }
 
 /// Run benchmarks in parallel using thread pool
@@ -585,43 +538,82 @@ fn printResultPanel(console: *rich.Console, model_id: []const u8, score: u32, to
     try console.printRenderable(panel);
 }
 
+/// Core benchmark execution - runs the benchmark suite with given config
+fn runBenchmarkSuite(allocator: std.mem.Allocator, cfg: *Config) !void {
+    var console = rich.Console.init(allocator);
+    defer console.deinit();
+
+    try printBanner(&console);
+
+    var report = Report.init(allocator);
+    defer report.deinit();
+
+    var ts_report = ThreadSafeReport.init(&report);
+
+    var progress = ProgressState.init();
+    defer progress.deinit(allocator);
+
+    const num_models = cfg.models.len;
+    const effective_parallel = @min(cfg.parallel, @as(u32, @intCast(num_models)));
+
+    try console.print("\n");
+    var info_buf: [128]u8 = undefined;
+    const info_msg = std.fmt.bufPrint(&info_buf, "Benchmarking {d} model(s) with parallelism={d}\n", .{ num_models, effective_parallel }) catch "Benchmarking...\n";
+    try console.print(info_msg);
+
+    const use_parallel = effective_parallel > 1 and num_models > 1;
+    if (use_parallel) {
+        try runParallelBenchmarks(allocator, cfg, &ts_report, &progress, &console);
+    } else {
+        try runSequentialBenchmarks(allocator, cfg, &report, &console);
+    }
+
+    try console.print("\n");
+    switch (cfg.output_format) {
+        .pretty => try report.renderTable(&console),
+        .json => {
+            const stdout_file = std.fs.File.stdout();
+            var buf: [4096]u8 = undefined;
+            var stdout = stdout_file.writer(&buf);
+            try report.renderJson(&stdout.interface);
+            try stdout.interface.flush();
+        },
+    }
+}
+
+/// Load API key from environment or .env file
+fn loadApiKey(allocator: std.mem.Allocator) ![]const u8 {
+    if (std.process.getEnvVarOwned(allocator, "OPENROUTER_API_KEY")) |key| {
+        return key;
+    } else |env_err| {
+        if (env_err != error.EnvironmentVariableNotFound) {
+            return env_err;
+        }
+    }
+    if (config.loadEnvFile(allocator, "OPENROUTER_API_KEY") catch null) |key| {
+        return key;
+    }
+    std.debug.print("Error: OPENROUTER_API_KEY not found\n", .{});
+    std.debug.print("Set it in environment or .env file\n", .{});
+    return error.MissingApiKey;
+}
+
 /// Launch interactive model selector and run benchmark with selected models
 fn launchModelSelector(allocator: std.mem.Allocator) !void {
-    // Get API key first
-    const api_key = blk: {
-        if (std.process.getEnvVarOwned(allocator, "OPENROUTER_API_KEY")) |key| {
-            break :blk key;
-        } else |env_err| {
-            if (env_err != error.EnvironmentVariableNotFound) {
-                return env_err;
-            }
-        }
-        // Try .env file
-        if (config.loadEnvFile(allocator, "OPENROUTER_API_KEY") catch null) |key| {
-            break :blk key;
-        }
-        std.debug.print("Error: OPENROUTER_API_KEY not found\n", .{});
-        std.debug.print("Set it in environment or .env file before using --select\n", .{});
-        return error.MissingApiKey;
-    };
+    const api_key = try loadApiKey(allocator);
     defer allocator.free(api_key);
 
-    // Run the selector
     const selected_models = model_selector.runSelector(allocator, api_key) catch |err| {
         std.debug.print("Model selector failed: {}\n", .{err});
         return err;
     };
 
-    if (selected_models == null) {
+    const models = selected_models orelse {
         std.debug.print("No models selected. Exiting.\n", .{});
         return;
-    }
-
-    const models = selected_models.?;
+    };
     defer {
-        for (models) |m| {
-            allocator.free(m);
-        }
+        for (models) |m| allocator.free(m);
         allocator.free(models);
     }
 
@@ -632,7 +624,6 @@ fn launchModelSelector(allocator: std.mem.Allocator) !void {
 
     std.debug.print("Selected {d} model(s). Running benchmark...\n", .{models.len});
 
-    // Build a config with selected models and run the benchmark
     var cfg = Config{
         .models = models,
         .runs = 1,
@@ -642,46 +633,8 @@ fn launchModelSelector(allocator: std.mem.Allocator) !void {
         .api_key = api_key,
         .allocator = allocator,
     };
-    // Don't deinit - we manage the memory ourselves above
 
-    // Initialize rich console
-    var console = rich.Console.init(allocator);
-    defer console.deinit();
-
-    // Print banner
-    try printBanner(&console);
-
-    // Initialize report
-    var report = Report.init(allocator);
-    defer report.deinit();
-
-    // Initialize thread-safe report wrapper
-    var ts_report = ThreadSafeReport.init(&report);
-
-    // Initialize progress state
-    var progress = ProgressState.init();
-    defer progress.deinit(allocator);
-
-    // Determine parallelism
-    const num_models = cfg.models.len;
-    const effective_parallel = @min(cfg.parallel, @as(u32, @intCast(num_models)));
-
-    // Print execution info
-    try console.print("\n");
-    var info_buf: [128]u8 = undefined;
-    const info_msg = std.fmt.bufPrint(&info_buf, "Benchmarking {d} model(s) with parallelism={d}\n", .{ num_models, effective_parallel }) catch "Benchmarking...\n";
-    try console.print(info_msg);
-
-    const use_parallel = effective_parallel > 1 and num_models > 1;
-    if (use_parallel) {
-        try runParallelBenchmarks(allocator, &cfg, &ts_report, &progress, &console);
-    } else {
-        try runSequentialBenchmarks(allocator, &cfg, &report, &console);
-    }
-
-    // Render final report
-    try console.print("\n");
-    try report.renderTable(&console);
+    try runBenchmarkSuite(allocator, &cfg);
 }
 
 test "main module tests" {

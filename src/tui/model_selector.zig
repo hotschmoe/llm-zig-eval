@@ -133,16 +133,12 @@ pub const SelectorState = struct {
         const filter_text = self.filter_state.text();
 
         for (self.models, 0..) |model, i| {
-            // Apply filter
-            if (filter_text.len > 0) {
-                var match = false;
-                // Case-insensitive search in model id and name
-                if (containsIgnoreCase(model.id, filter_text) or
-                    containsIgnoreCase(model.name, filter_text))
-                {
-                    match = true;
-                }
-                if (!match) continue;
+            // Apply filter - case-insensitive search in model id and name
+            if (filter_text.len > 0 and
+                !containsIgnoreCase(model.id, filter_text) and
+                !containsIgnoreCase(model.name, filter_text))
+            {
+                continue;
             }
 
             const display = try self.formatDisplayItem(model);
@@ -389,6 +385,17 @@ pub fn fetchModels(allocator: std.mem.Allocator, api_key: []const u8) ![]ModelIn
     return parseModelsResponse(allocator, body);
 }
 
+/// Parse a price value from JSON (can be string, float, or integer), returns $ per million tokens
+fn parsePriceValue(value: ?std.json.Value) f64 {
+    const v = value orelse return 0;
+    return switch (v) {
+        .string => |s| (std.fmt.parseFloat(f64, s) catch 0) * 1_000_000,
+        .float => |f| f * 1_000_000,
+        .integer => |i| @as(f64, @floatFromInt(i)) * 1_000_000,
+        else => 0,
+    };
+}
+
 fn parseModelsResponse(allocator: std.mem.Allocator, json_body: []const u8) ![]ModelInfo {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_body, .{}) catch {
         return error.JsonParseError;
@@ -429,28 +436,10 @@ fn parseModelsResponse(allocator: std.mem.Allocator, json_body: []const u8) ![]M
             else => 0,
         };
 
-        // Get pricing
-        var prompt_price: f64 = 0;
-        var completion_price: f64 = 0;
-
-        if (obj.get("pricing")) |pricing| {
-            if (pricing.object.get("prompt")) |p| {
-                prompt_price = switch (p) {
-                    .string => |s| (std.fmt.parseFloat(f64, s) catch 0) * 1_000_000,
-                    .float => |f| f * 1_000_000,
-                    .integer => |i| @as(f64, @floatFromInt(i)) * 1_000_000,
-                    else => 0,
-                };
-            }
-            if (pricing.object.get("completion")) |c| {
-                completion_price = switch (c) {
-                    .string => |s| (std.fmt.parseFloat(f64, s) catch 0) * 1_000_000,
-                    .float => |f| f * 1_000_000,
-                    .integer => |i| @as(f64, @floatFromInt(i)) * 1_000_000,
-                    else => 0,
-                };
-            }
-        }
+        // Get pricing (convert to $ per million tokens)
+        const pricing = obj.get("pricing");
+        const prompt_price = if (pricing) |p| parsePriceValue(p.object.get("prompt")) else 0;
+        const completion_price = if (pricing) |p| parsePriceValue(p.object.get("completion")) else 0;
 
         try models.append(allocator, .{
             .id = try allocator.dupe(u8, id),
