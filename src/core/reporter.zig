@@ -33,6 +33,22 @@ pub const ModelResult = struct {
     }
 };
 
+/// Thread-safe wrapper for Report allowing concurrent addResult() calls
+pub const ThreadSafeReport = struct {
+    report: *Report,
+    mutex: std.Thread.Mutex = .{},
+
+    pub fn init(report: *Report) ThreadSafeReport {
+        return .{ .report = report };
+    }
+
+    pub fn addResult(self: *ThreadSafeReport, result: ModelResult) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.report.addResult(result);
+    }
+};
+
 /// Full benchmark report
 pub const Report = struct {
     results: std.ArrayList(ModelResult),

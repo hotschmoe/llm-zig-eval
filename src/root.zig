@@ -26,6 +26,7 @@ pub const Message = openrouter.Message;
 pub const ChatResponse = openrouter.ChatResponse;
 pub const TokenUsage = tokens.TokenUsage;
 pub const Report = reporter.Report;
+pub const ThreadSafeReport = reporter.ThreadSafeReport;
 pub const ModelResult = reporter.ModelResult;
 pub const ProblemResult = reporter.ProblemResult;
 pub const Sandbox = sandbox.Sandbox;

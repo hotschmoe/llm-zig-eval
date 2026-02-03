@@ -1,5 +1,8 @@
 //! OpenRouter API gateway
 //! HTTP client for sending chat completion requests to OpenRouter.
+//!
+//! Thread Safety: std.http.Client is NOT thread-safe. When using parallel
+//! execution, each thread must create its own Client instance.
 
 const std = @import("std");
 const json = std.json;
