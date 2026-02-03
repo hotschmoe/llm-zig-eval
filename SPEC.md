@@ -370,3 +370,4 @@ OPENROUTER_API_KEY=sk-or-v1-...
 - [ ] Result caching
 - [ ] Historical comparison
 - [ ] test giving a semantic search indexed info for zig v0.15.2 so older models can have access to updated features and syntax in zig that may have missed their training (and stop the model from searching the web and wasting tokens)
+- [ ] test model pairs (ie OPUS4.5 vs OPUS4.5+SONNET --> OPUS creates function names (skeleton) and SONNET fills them in --> OPUS4.5+SONNET should score the same as OPUS4.5 alone but be cheaper)
