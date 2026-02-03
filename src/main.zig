@@ -522,12 +522,11 @@ fn printResultPanel(console: *rich.Console, model_id: []const u8, score: u32, to
         total,
     }) catch "Completed";
 
-    const panel = if (score == total)
-        rich.Panel.success(console.allocator, panel_msg)
-    else if (score > 0)
-        rich.Panel.warning(console.allocator, panel_msg)
-    else
-        rich.Panel.err(console.allocator, panel_msg);
+    const panel = blk: {
+        if (score == total) break :blk rich.Panel.success(console.allocator, panel_msg);
+        if (score > 0) break :blk rich.Panel.warning(console.allocator, panel_msg);
+        break :blk rich.Panel.err(console.allocator, panel_msg);
+    };
 
     try console.printRenderable(panel);
 }

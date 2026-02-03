@@ -203,104 +203,82 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 
 /// Update function for the TUI app
 fn update(state: *SelectorState, event: Event) Action {
-    switch (event) {
-        .key => |key| {
-            // Handle special keys first
-            switch (key.code) {
-                .escape => {
-                    state.quit_without_select = true;
-                    return Action.quit_action;
-                },
-                .enter => {
-                    if (state.selectedCount() > 0) {
-                        state.submitted = true;
-                        return Action.quit_action;
-                    }
-                },
-                .char => |c| {
-                    if (key.modifiers.ctrl) {
-                        switch (c) {
-                            'c' => {
-                                state.quit_without_select = true;
-                                return Action.quit_action;
-                            },
-                            // Ctrl+H is backspace in some terminals
-                            'h', 8 => {
-                                if (state.filter_state.handleKey(.{ .code = .backspace })) {
-                                    state.rebuildDisplayItems() catch {};
-                                }
-                                return Action.none_action;
-                            },
-                            else => {},
-                        }
-                        return Action.none_action;
-                    } else if (c == ' ') {
-                        state.toggleSelection();
-                        return Action.none_action;
-                    } else {
-                        // Pass to filter input
-                        if (state.filter_state.handleKey(key)) {
-                            state.rebuildDisplayItems() catch {};
-                        }
-                        return Action.none_action;
-                    }
-                },
-                .up => {
-                    if (state.cursor > 0) {
-                        state.cursor -= 1;
-                        state.scroll.ensureVisible(state.cursor);
-                    }
-                    return Action.none_action;
-                },
-                .down => {
-                    if (state.cursor + 1 < state.filtered_indices.items.len) {
-                        state.cursor += 1;
-                        state.scroll.ensureVisible(state.cursor);
-                    }
-                    return Action.none_action;
-                },
-                .page_up => {
-                    const page = @min(state.scroll.viewport, state.cursor);
-                    state.cursor -|= page;
-                    state.scroll.ensureVisible(state.cursor);
-                    return Action.none_action;
-                },
-                .page_down => {
-                    const page = state.scroll.viewport;
-                    state.cursor = @min(state.cursor + page, state.filtered_indices.items.len -| 1);
-                    state.scroll.ensureVisible(state.cursor);
-                    return Action.none_action;
-                },
-                .home => {
-                    state.cursor = 0;
-                    state.scroll.ensureVisible(0);
-                    return Action.none_action;
-                },
-                .end => {
-                    if (state.filtered_indices.items.len > 0) {
-                        state.cursor = state.filtered_indices.items.len - 1;
-                        state.scroll.ensureVisible(state.cursor);
-                    }
-                    return Action.none_action;
-                },
-                .backspace => {
-                    if (state.filter_state.handleKey(key)) {
-                        state.rebuildDisplayItems() catch {};
-                    }
-                    return Action.none_action;
-                },
-                .delete => {
-                    if (state.filter_state.handleKey(key)) {
-                        state.rebuildDisplayItems() catch {};
-                    }
-                    return Action.none_action;
-                },
-                else => {},
+    const key = switch (event) {
+        .key => |k| k,
+        else => return Action.none_action,
+    };
+
+    switch (key.code) {
+        .escape => {
+            state.quit_without_select = true;
+            return Action.quit_action;
+        },
+        .enter => {
+            if (state.selectedCount() > 0) {
+                state.submitted = true;
+                return Action.quit_action;
             }
         },
+        .char => |c| {
+            if (key.modifiers.ctrl) {
+                if (c == 'c') {
+                    state.quit_without_select = true;
+                    return Action.quit_action;
+                }
+                // Ctrl+H is backspace in some terminals
+                if (c == 'h' or c == 8) {
+                    handleFilterKey(state, .{ .code = .backspace });
+                }
+                return Action.none_action;
+            }
+            if (c == ' ') {
+                state.toggleSelection();
+            } else {
+                handleFilterKey(state, key);
+            }
+        },
+        .up => {
+            if (state.cursor > 0) {
+                state.cursor -= 1;
+                state.scroll.ensureVisible(state.cursor);
+            }
+        },
+        .down => {
+            if (state.cursor + 1 < state.filtered_indices.items.len) {
+                state.cursor += 1;
+                state.scroll.ensureVisible(state.cursor);
+            }
+        },
+        .page_up => {
+            const page = @min(state.scroll.viewport, state.cursor);
+            state.cursor -|= page;
+            state.scroll.ensureVisible(state.cursor);
+        },
+        .page_down => {
+            const page = state.scroll.viewport;
+            state.cursor = @min(state.cursor + page, state.filtered_indices.items.len -| 1);
+            state.scroll.ensureVisible(state.cursor);
+        },
+        .home => {
+            state.cursor = 0;
+            state.scroll.ensureVisible(0);
+        },
+        .end => {
+            if (state.filtered_indices.items.len > 0) {
+                state.cursor = state.filtered_indices.items.len - 1;
+                state.scroll.ensureVisible(state.cursor);
+            }
+        },
+        .backspace, .delete => handleFilterKey(state, key),
         else => {},
     }
     return Action.none_action;
+}
+
+fn handleFilterKey(state: *SelectorState, key: Key) void {
+    if (state.filter_state.handleKey(key)) {
+        state.rebuildDisplayItems() catch {};
+    }
 }
 
 /// View function for the TUI app
@@ -491,38 +469,29 @@ pub fn runSelector(allocator: std.mem.Allocator, api_key: []const u8) !?[]const 
 
     std.debug.print("Found {d} models. Launching selector...\n", .{models.len});
 
-    // Initialize state - app takes ownership via copy, so we use app.state after init
-    const initial_state = try SelectorState.init(allocator, models);
+    // Initialize state - we own this and pass a pointer to the app
+    var state = try SelectorState.init(allocator, models);
+    defer state.deinit();
 
     // Create and run the app
     var app = App(SelectorState).init(.{
-        .state = initial_state,
+        .state = &state,
         .update = update,
         .view = view,
         .alternate_screen = true,
     });
-
-    // CRITICAL: Re-initialize filter_state to point to app's copy of filter_buffer.
-    // When SelectorState is copied into the app, the filter_buffer array is copied,
-    // but filter_state.buffer (a slice) still points to the original buffer.
-    // This fixes text input working with the correct buffer.
-    app.state.filter_state = TextInputState.init(&app.state.filter_buffer);
-
-    // Deinit the app's copy of state (not initial_state, which shares memory)
-    defer app.state.deinit();
 
     app.run(allocator) catch |err| {
         std.debug.print("TUI error: {}\n", .{err});
         return error.TuiError;
     };
 
-    // Check result from app's state (update() modifies app.state, not initial_state)
-    if (app.state.quit_without_select) {
+    if (state.quit_without_select) {
         return null;
     }
 
-    if (app.state.submitted) {
-        return try app.state.getSelectedModels();
+    if (state.submitted) {
+        return try state.getSelectedModels();
     }
 
     return null;
