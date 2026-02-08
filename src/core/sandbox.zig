@@ -32,15 +32,14 @@ pub const Problem = struct {
     test_path: []const u8,
 };
 
-/// Benchmark problems (simple test for now)
+/// Benchmark problems
 pub const PROBLEMS = [_]Problem{
-    .{
-        .id = "q0",
-        .name = "isPrime",
-        .prompt_path = "problems/q0_primes.txt",
-        .test_path = "problems/q0_test.zig",
-    },
-    // TODO: Re-enable after error retry is working
+    // .{
+    //     .id = "q0",
+    //     .name = "isPrime",
+    //     .prompt_path = "problems/q0_primes.txt",
+    //     .test_path = "problems/q0_test.zig",
+    // },
     // .{
     //     .id = "q1",
     //     .name = "Arena Allocator",
@@ -59,6 +58,12 @@ pub const PROBLEMS = [_]Problem{
     //     .prompt_path = "problems/q3_comptime.txt",
     //     .test_path = "problems/q3_test.zig",
     // },
+    .{
+        .id = "q4",
+        .name = "Ring Buffer",
+        .prompt_path = "problems/q4_ringbuffer.txt",
+        .test_path = "problems/q4_test.zig",
+    },
 };
 
 /// Sandbox for running LLM-generated code

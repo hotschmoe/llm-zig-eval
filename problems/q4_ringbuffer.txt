@@ -1,0 +1,73 @@
+Implement a generic ring buffer (circular buffer) using Zig's comptime generics.
+
+Define a public function:
+
+    pub fn RingBuffer(comptime T: type, comptime capacity: usize) type
+
+This function returns a struct type implementing a fixed-capacity FIFO queue
+backed by a comptime-sized array. No heap allocation is used.
+
+The returned type must provide these methods:
+
+INITIALIZATION
+
+  pub fn init() Self
+    Return an empty ring buffer. The backing store is [capacity]T.
+
+ELEMENT OPERATIONS
+
+  pub fn push(self: ..., item: T) error{Overflow}!void
+    Append item to the back of the buffer.
+    Return error.Overflow if the buffer is full.
+
+  pub fn pop(self: ...) ?T
+    Remove and return the front item. Return null if empty.
+
+  pub fn peek(self: ...) ?T
+    Return the front item without removing it. Return null if empty.
+
+STATE QUERIES
+
+  pub fn len(self: ...) usize
+    Number of items currently stored.
+
+  pub fn isFull(self: ...) bool
+
+  pub fn isEmpty(self: ...) bool
+
+RESET
+
+  pub fn reset(self: ...) void
+    Remove all items (buffer becomes empty).
+
+ITERATION
+
+  The type must contain a nested public Iterator struct:
+
+  pub const Iterator = struct {
+      ...
+      pub fn next(self: *Iterator) ?T
+  };
+
+  pub fn iterator(self: ...) Iterator
+    Return a non-consuming forward iterator (front-to-back).
+    Advancing the iterator does NOT remove items from the buffer.
+
+ZERO-COPY VIEW
+
+  pub fn slices(self: ...) struct { first: []const T, second: []const T }
+    Return two slices that together reference all stored items in order.
+    - If items are contiguous in the backing array: first has all items,
+      second has length 0.
+    - If items wrap around the end of the array: first covers from the
+      head to the end of the array, second covers from the start of the
+      array to the logical tail.
+    Both slices point directly into the internal array (zero copy).
+
+NOTES
+
+  - The "self" parameter types are left as "..." above. Choose the correct
+    Zig convention (value, pointer, or const pointer) for each method based
+    on whether it mutates state or returns references to internal memory.
+  - All index arithmetic must correctly wrap around the backing array.
+  - The struct must work with any element type T (integers, floats, structs).
