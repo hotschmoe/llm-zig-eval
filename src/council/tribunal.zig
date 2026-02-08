@@ -248,7 +248,6 @@ pub const Tribunal = struct {
     }
 };
 
-// Tests
 test "tribunal init" {
     const allocator = std.testing.allocator;
     var client = openrouter.Client.init(allocator, "test-key");

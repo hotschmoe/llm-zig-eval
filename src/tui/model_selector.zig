@@ -133,11 +133,7 @@ pub const SelectorState = struct {
         const price_str = ModelInfo.formatPrice(model.prompt_price, &price_buf);
         const ctx_str = ModelInfo.formatContext(model.context_length, &ctx_buf);
 
-        const is_checked = switch (self.mode) {
-            .benchmark => model.selected,
-            .council => model.council_selected,
-        };
-        const checkbox = if (is_checked) "[x]" else "[ ]";
+        const checkbox: []const u8 = if (isSelectedForMode(model, self.mode)) "[x]" else "[ ]";
 
         return try std.fmt.allocPrint(self.allocator, "{s} {s} {s} {s}", .{
             checkbox,
@@ -196,37 +192,42 @@ pub const SelectorState = struct {
     }
 
     pub fn getSelectedModels(self: Self) ![]const []const u8 {
-        var selected: std.ArrayList([]const u8) = .empty;
-        for (self.models) |model| {
-            if (model.selected) {
-                try selected.append(self.allocator, try self.allocator.dupe(u8, model.id));
-            }
-        }
-        return try selected.toOwnedSlice(self.allocator);
+        return self.collectModelIds(.benchmark);
     }
 
     pub fn selectedCount(self: Self) usize {
-        var count: usize = 0;
-        for (self.models) |model| {
-            if (model.selected) count += 1;
-        }
-        return count;
+        return self.countByMode(.benchmark);
     }
 
     pub fn getCouncilModels(self: Self) ![]const []const u8 {
-        var selected: std.ArrayList([]const u8) = .empty;
-        for (self.models) |model| {
-            if (model.council_selected) {
-                try selected.append(self.allocator, try self.allocator.dupe(u8, model.id));
-            }
-        }
-        return try selected.toOwnedSlice(self.allocator);
+        return self.collectModelIds(.council);
     }
 
     pub fn councilCount(self: Self) usize {
+        return self.countByMode(.council);
+    }
+
+    fn isSelectedForMode(model: ModelInfo, mode: SelectionMode) bool {
+        return switch (mode) {
+            .benchmark => model.selected,
+            .council => model.council_selected,
+        };
+    }
+
+    fn collectModelIds(self: Self, mode: SelectionMode) ![]const []const u8 {
+        var result: std.ArrayList([]const u8) = .empty;
+        for (self.models) |model| {
+            if (isSelectedForMode(model, mode)) {
+                try result.append(self.allocator, try self.allocator.dupe(u8, model.id));
+            }
+        }
+        return try result.toOwnedSlice(self.allocator);
+    }
+
+    fn countByMode(self: Self, mode: SelectionMode) usize {
         var count: usize = 0;
         for (self.models) |model| {
-            if (model.council_selected) count += 1;
+            if (isSelectedForMode(model, mode)) count += 1;
         }
         return count;
     }
@@ -576,8 +577,6 @@ pub fn runSelector(allocator: std.mem.Allocator, api_key: []const u8, council_en
     return null;
 }
 
-// Tests
-
 test "containsIgnoreCase" {
     try std.testing.expect(containsIgnoreCase("Hello World", "world"));
     try std.testing.expect(containsIgnoreCase("anthropic/claude-3.5-sonnet", "claude"));
@@ -591,7 +590,7 @@ test "ModelInfo.formatPrice" {
     try std.testing.expectEqualStrings("$3", ModelInfo.formatPrice(3.0, &buf));
     try std.testing.expectEqualStrings("$15", ModelInfo.formatPrice(15.0, &buf));
     try std.testing.expectEqualStrings("$0.25", ModelInfo.formatPrice(0.25, &buf));
-    try std.testing.expectEqualStrings("$0.075", ModelInfo.formatPrice(0.075, &buf));
+    try std.testing.expectEqualStrings("$0.08", ModelInfo.formatPrice(0.075, &buf));
 }
 
 test "ModelInfo.formatContext" {

@@ -38,26 +38,24 @@ pub const JUDGE_PERSONAS = [_]PersonaDef{
     },
 };
 
-/// Default judge personas with current OpenRouter model IDs
-pub const DEFAULT_JUDGES = [_]JudgePersona{
-    .{
-        .name = "Pedant",
-        .model_id = "anthropic/claude-sonnet-4",
-        .focus = "Safety, defer, strict types",
-        .system_prompt = prompts.PEDANT_PROMPT,
-    },
-    .{
-        .name = "Architect",
-        .model_id = "openai/gpt-4o",
-        .focus = "Readability, structure, logic",
-        .system_prompt = prompts.ARCHITECT_PROMPT,
-    },
-    .{
-        .name = "Hacker",
-        .model_id = "deepseek/deepseek-chat-v3-0324",
-        .focus = "Performance, cleverness, brevity",
-        .system_prompt = prompts.HACKER_PROMPT,
-    },
+const DEFAULT_MODEL_IDS = [_][]const u8{
+    "anthropic/claude-sonnet-4",
+    "openai/gpt-4o",
+    "deepseek/deepseek-chat-v3-0324",
+};
+
+/// Default judge personas built from JUDGE_PERSONAS with assigned model IDs
+pub const DEFAULT_JUDGES = blk: {
+    var judges: [JUDGE_PERSONAS.len]JudgePersona = undefined;
+    for (&judges, JUDGE_PERSONAS, DEFAULT_MODEL_IDS) |*judge, persona, model_id| {
+        judge.* = .{
+            .name = persona.name,
+            .model_id = model_id,
+            .focus = persona.focus,
+            .system_prompt = persona.system_prompt,
+        };
+    }
+    break :blk judges;
 };
 
 /// Verdict from a single judge
@@ -126,7 +124,6 @@ pub const GradingCriteria = struct {
     zig_zen_weight: f32 = 0.2, // Idiomatic Zig style
 };
 
-// Tests
 test "rating from score" {
     try std.testing.expectEqual(ConsensusResult.Rating.S, ConsensusResult.Rating.fromScore(9.5));
     try std.testing.expectEqual(ConsensusResult.Rating.A, ConsensusResult.Rating.fromScore(8.5));

@@ -595,23 +595,6 @@ fn runBenchmarkSuite(allocator: std.mem.Allocator, cfg: *Config) !void {
     }
 }
 
-/// Load API key from environment or .env file
-fn loadApiKey(allocator: std.mem.Allocator) ![]const u8 {
-    if (std.process.getEnvVarOwned(allocator, "OPENROUTER_API_KEY")) |key| {
-        return key;
-    } else |env_err| {
-        if (env_err != error.EnvironmentVariableNotFound) {
-            return env_err;
-        }
-    }
-    if (config.loadEnvFile(allocator, "OPENROUTER_API_KEY") catch null) |key| {
-        return key;
-    }
-    std.debug.print("Error: OPENROUTER_API_KEY not found\n", .{});
-    std.debug.print("Set it in environment or .env file\n", .{});
-    return error.MissingApiKey;
-}
-
 /// Check if --council flag is present in process args (for pre-parse before TUI)
 fn hasCouncilFlag() bool {
     var args = std.process.args();
@@ -624,7 +607,7 @@ fn hasCouncilFlag() bool {
 
 /// Launch interactive model selector and run benchmark with selected models
 fn launchModelSelector(allocator: std.mem.Allocator, council_enabled: bool) !void {
-    const api_key = try loadApiKey(allocator);
+    const api_key = try config.loadApiKey(allocator);
     defer allocator.free(api_key);
 
     const result = model_selector.runSelector(allocator, api_key, council_enabled) catch |err| {
@@ -674,8 +657,6 @@ fn launchModelSelector(allocator: std.mem.Allocator, council_enabled: bool) !voi
     try runBenchmarkSuite(allocator, &cfg);
 }
 
-test "main module tests" {
-    // Basic sanity tests
-    const allocator = std.testing.allocator;
-    _ = allocator;
+test "main module compiles" {
+    std.testing.refAllDecls(@This());
 }

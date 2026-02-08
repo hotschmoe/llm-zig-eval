@@ -79,6 +79,22 @@ pub const Config = struct {
     }
 };
 
+/// Load API key from environment variable or .env file
+pub fn loadApiKey(allocator: std.mem.Allocator) ![]const u8 {
+    if (std.process.getEnvVarOwned(allocator, "OPENROUTER_API_KEY")) |key| {
+        return key;
+    } else |err| {
+        if (err != error.EnvironmentVariableNotFound) {
+            return err;
+        }
+    }
+    if (loadEnvFile(allocator, "OPENROUTER_API_KEY") catch null) |key| {
+        return key;
+    }
+    std.debug.print("Error: OPENROUTER_API_KEY not found in environment or .env file\n", .{});
+    return error.MissingApiKey;
+}
+
 /// Parse CLI arguments into Config
 pub fn parseArgs(allocator: std.mem.Allocator) !Config {
     var args = try std.process.argsWithAllocator(allocator);
@@ -125,24 +141,7 @@ pub fn parseArgs(allocator: std.mem.Allocator) !Config {
         }
     }
 
-    // Get API key from environment or .env file
-    const api_key = blk: {
-        // First try environment variable
-        if (std.process.getEnvVarOwned(allocator, "OPENROUTER_API_KEY")) |key| {
-            break :blk key;
-        } else |err| {
-            if (err != error.EnvironmentVariableNotFound) {
-                return err;
-            }
-        }
-        // Fall back to .env file
-        if (loadEnvFile(allocator, "OPENROUTER_API_KEY") catch null) |key| {
-            std.debug.print("Loaded API key from .env file\n", .{});
-            break :blk key;
-        }
-        std.debug.print("Error: OPENROUTER_API_KEY not found in environment or .env file\n", .{});
-        return error.MissingApiKey;
-    };
+    const api_key = try loadApiKey(allocator);
     errdefer allocator.free(api_key);
 
     // Build model list from file and/or CLI
@@ -302,7 +301,6 @@ pub const ConfigError = error{
     ModelsFileReadError,
 };
 
-// Tests
 test "getModelCost finds known model" {
     const cost = getModelCost("anthropic/claude-3.5-sonnet");
     try std.testing.expect(cost != null);
