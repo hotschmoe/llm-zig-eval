@@ -42,7 +42,6 @@ const SYSTEM_PROMPT =
 
 const MAX_RETRIES: u32 = 4;
 
-/// Task context for classic (non-TUI) parallel benchmark execution
 const BenchmarkTask = struct {
     model_id: []const u8,
     api_key: []const u8,
@@ -54,7 +53,6 @@ const BenchmarkTask = struct {
     err: ?anyerror = null,
 };
 
-/// Tracks a passed solution for council judging
 const PassedSolution = struct {
     prompt: []const u8,
     code: []const u8,
@@ -72,7 +70,6 @@ pub fn main() !void {
     }
     const allocator = gpa.allocator();
 
-    // Parse CLI arguments
     var cfg = config.parseArgs(allocator) catch |err| {
         switch (err) {
             error.HelpRequested => return,
@@ -101,10 +98,6 @@ pub fn main() !void {
     try runBenchmarkSuite(allocator, &cfg);
 }
 
-// ---------------------------------------------------------------------------
-// Benchmark suite entry -- routes to TUI or classic depending on output format
-// ---------------------------------------------------------------------------
-
 fn runBenchmarkSuite(allocator: std.mem.Allocator, cfg: *Config) !void {
     switch (cfg.output_format) {
         .pretty => try benchmark_runner.launchBenchmarkRunner(allocator, cfg),
@@ -112,7 +105,6 @@ fn runBenchmarkSuite(allocator: std.mem.Allocator, cfg: *Config) !void {
     }
 }
 
-/// Classic stdout-based benchmark execution (used for JSON output)
 fn runBenchmarkSuiteClassic(allocator: std.mem.Allocator, cfg: *Config) !void {
     var console = rich.Console.init(allocator);
     defer console.deinit();
@@ -140,17 +132,12 @@ fn runBenchmarkSuiteClassic(allocator: std.mem.Allocator, cfg: *Config) !void {
     }
 
     try console.print("\n");
-    // Classic path always renders JSON (that's why we're here)
     const stdout_file = std.fs.File.stdout();
     var buf: [4096]u8 = undefined;
     var stdout = stdout_file.writer(&buf);
     try report.renderJson(&stdout.interface);
     try stdout.interface.flush();
 }
-
-// ---------------------------------------------------------------------------
-// Classic parallel / sequential runners (for JSON output path)
-// ---------------------------------------------------------------------------
 
 fn runParallelBenchmarks(
     allocator: std.mem.Allocator,
@@ -279,10 +266,6 @@ fn runSequentialBenchmarks(
         try printResultPanel(console, model_id, model_result.score, model_result.total_problems);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Core benchmark logic for a single model
-// ---------------------------------------------------------------------------
 
 pub fn runModelBenchmarkCore(
     allocator: std.mem.Allocator,
@@ -432,7 +415,6 @@ pub fn runModelBenchmarkCore(
             }
         }
 
-        // Log final status if not already logged as PASS
         if (best_status != .pass) {
             var fail_buf: [128]u8 = undefined;
             const fail_tag = switch (best_status) {
@@ -521,10 +503,6 @@ pub fn runModelBenchmarkCore(
     };
 }
 
-// ---------------------------------------------------------------------------
-// Banner / result panels (used by classic path)
-// ---------------------------------------------------------------------------
-
 fn printBanner(console: *rich.Console) !void {
     const banner_text =
         \\
@@ -560,10 +538,6 @@ fn printResultPanel(console: *rich.Console, model_id: []const u8, score: u32, to
 
     try console.printRenderable(panel);
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn hasCouncilFlag() bool {
     var args = std.process.args();

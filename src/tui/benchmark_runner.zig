@@ -27,14 +27,8 @@ const ScrollState = zithril.ScrollState;
 const ScrollableList = zithril.ScrollableList;
 const Constraint = zithril.Constraint;
 const Direction = zithril.Direction;
-const Key = zithril.Key;
 const KeyCode = zithril.KeyCode;
 const Gauge = zithril.Gauge;
-const Buffer = zithril.Buffer;
-
-// ---------------------------------------------------------------------------
-// Log / Progress types
-// ---------------------------------------------------------------------------
 
 pub const LogLevel = enum {
     info,
@@ -45,8 +39,8 @@ pub const LogLevel = enum {
 
 pub const LogEntry = struct {
     timestamp_ms: i64,
-    model_id: []const u8, // borrowed, lives as long as Config
-    message: []const u8, // owned by channel allocator
+    model_id: []const u8,
+    message: []const u8,
     level: LogLevel,
 };
 
@@ -58,10 +52,6 @@ pub const ModelProgress = struct {
 
     pub const Status = enum { pending, running, done, failed };
 };
-
-// ---------------------------------------------------------------------------
-// BenchmarkChannel -- thread-safe bridge between workers and TUI
-// ---------------------------------------------------------------------------
 
 pub const BenchmarkChannel = struct {
     mutex: std.Thread.Mutex = .{},
@@ -122,7 +112,6 @@ pub const BenchmarkChannel = struct {
         gop.value_ptr.status = if (success) .done else .failed;
     }
 
-    /// Drain queued log entries into the caller's list. Caller owns the messages.
     pub fn drainLogs(self: *BenchmarkChannel, dest: *std.ArrayList(LogEntry), dest_allocator: std.mem.Allocator) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -132,11 +121,9 @@ pub const BenchmarkChannel = struct {
                 self.allocator.free(entry.message);
             };
         }
-        // Clear without freeing messages (ownership transferred)
         self.log_queue.clearRetainingCapacity();
     }
 
-    /// Snapshot current progress for all models.
     pub fn getProgressSnapshot(self: *BenchmarkChannel, dest: *std.StringHashMapUnmanaged(ModelProgress), allocator: std.mem.Allocator) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -148,10 +135,6 @@ pub const BenchmarkChannel = struct {
         }
     }
 };
-
-// ---------------------------------------------------------------------------
-// ProgressCallback -- abstraction for stdout vs channel progress reporting
-// ---------------------------------------------------------------------------
 
 pub const ProgressCallback = union(enum) {
     stdout: StdoutProgress,
@@ -173,12 +156,12 @@ pub const ProgressCallback = union(enum) {
             .channel => |ch| ch.postLog(model_id, message, level),
             .stdout => |s| {
                 if (s.verbose) {
-                    switch (level) {
-                        .err => std.debug.print("  ! {s}: {s}\n", .{ model_id, message }),
-                        .warn => std.debug.print("  ? {s}: {s}\n", .{ model_id, message }),
-                        .success => std.debug.print("  {s}: {s}\n", .{ model_id, message }),
-                        .info => std.debug.print("  {s}: {s}\n", .{ model_id, message }),
-                    }
+                    const prefix: []const u8 = switch (level) {
+                        .err => "! ",
+                        .warn => "? ",
+                        .info, .success => "",
+                    };
+                    std.debug.print("  {s}{s}: {s}\n", .{ prefix, model_id, message });
                 }
             },
         }
@@ -192,10 +175,6 @@ pub const ProgressCallback = union(enum) {
     }
 };
 
-// ---------------------------------------------------------------------------
-// RunnerState -- TUI state
-// ---------------------------------------------------------------------------
-
 const MAX_LOG_ENTRIES: usize = 500;
 const SPINNER_CHARS = [_][]const u8{ "|", "/", "-", "\\" };
 
@@ -207,36 +186,30 @@ pub const RunnerState = struct {
     model_ids: []const []const u8,
     view_mode: ViewMode = .progress,
 
-    // Log display
     log_entries: std.ArrayList(LogEntry),
-    log_display: std.ArrayList([]const u8), // formatted strings for ScrollableList
+    log_display: std.ArrayList([]const u8),
     log_scroll: ScrollState,
     log_auto_scroll: bool = true,
 
-    // Progress snapshot (updated each tick)
     progress_snap: std.StringHashMapUnmanaged(ModelProgress),
 
-    // Results
     report: *Report,
     result_lines: std.ArrayList([]const u8),
     result_scroll: ScrollState,
     results_built: bool = false,
 
-    // Animation / timing
     spinner_frame: u8 = 0,
     start_time: i64,
     completed_models: u32 = 0,
     total_models: u32,
     all_done: bool = false,
 
-    const Self = @This();
-
     pub fn init(
         allocator: std.mem.Allocator,
         channel: *BenchmarkChannel,
         model_ids: []const []const u8,
         report: *Report,
-    ) Self {
+    ) RunnerState {
         return .{
             .allocator = allocator,
             .channel = channel,
@@ -253,7 +226,7 @@ pub const RunnerState = struct {
         };
     }
 
-    pub fn deinit(self: *Self) void {
+    pub fn deinit(self: *RunnerState) void {
         for (self.log_entries.items) |entry| {
             self.allocator.free(entry.message);
         }
@@ -269,22 +242,18 @@ pub const RunnerState = struct {
         self.result_lines.deinit(self.allocator);
     }
 
-    /// Pull new logs from channel, cap at MAX_LOG_ENTRIES
-    fn drainAndFormat(self: *Self) void {
+    fn drainAndFormat(self: *RunnerState) void {
         self.channel.drainLogs(&self.log_entries, self.allocator);
 
-        // Trim old entries if over cap
         while (self.log_entries.items.len > MAX_LOG_ENTRIES) {
             const removed = self.log_entries.orderedRemove(0);
             self.allocator.free(removed.message);
-            // Also remove corresponding display string
             if (self.log_display.items.len > 0) {
                 const ds = self.log_display.orderedRemove(0);
                 self.allocator.free(ds);
             }
         }
 
-        // Format any new entries that don't have display strings yet
         while (self.log_display.items.len < self.log_entries.items.len) {
             const entry = self.log_entries.items[self.log_display.items.len];
             const formatted = self.formatLogEntry(entry) catch break;
@@ -300,8 +269,7 @@ pub const RunnerState = struct {
         }
     }
 
-    fn formatLogEntry(self: *Self, entry: LogEntry) ![]const u8 {
-        // Format timestamp as HH:MM:SS
+    fn formatLogEntry(self: *RunnerState, entry: LogEntry) ![]const u8 {
         const epoch_secs: u64 = @intCast(@divFloor(entry.timestamp_ms, 1000));
         const day_secs = epoch_secs % 86400;
         const hours = day_secs / 3600;
@@ -315,7 +283,6 @@ pub const RunnerState = struct {
             .success => "+",
         };
 
-        // Truncate model_id to last component for brevity
         const short_model = shortModelName(entry.model_id);
 
         return std.fmt.allocPrint(self.allocator, "{d:0>2}:{d:0>2}:{d:0>2} {s} {s}: {s}", .{
@@ -328,10 +295,9 @@ pub const RunnerState = struct {
         });
     }
 
-    fn refreshProgressSnapshot(self: *Self) void {
+    fn refreshProgressSnapshot(self: *RunnerState) void {
         self.channel.getProgressSnapshot(&self.progress_snap, self.allocator);
 
-        // Count completed models
         var done: u32 = 0;
         var it = self.progress_snap.iterator();
         while (it.next()) |kv| {
@@ -353,10 +319,6 @@ fn shortModelName(model_id: []const u8) []const u8 {
     }
     return model_id;
 }
-
-// ---------------------------------------------------------------------------
-// TUI update / view
-// ---------------------------------------------------------------------------
 
 fn update(state: *RunnerState, event: Event) Action {
     switch (event) {
@@ -398,7 +360,6 @@ fn update(state: *RunnerState, event: Event) Action {
                 .down => {
                     if (state.view_mode == .progress) {
                         state.log_scroll.scrollDown();
-                        // Re-enable auto scroll if at bottom
                         if (state.log_scroll.atEnd()) {
                             state.log_auto_scroll = true;
                         }
@@ -443,7 +404,6 @@ fn view(state: *RunnerState, frame: *Frame(App(RunnerState).DefaultMaxWidgets)) 
 
 fn renderProgressView(state: *RunnerState, frame: *Frame(App(RunnerState).DefaultMaxWidgets), area: Rect) void {
     const model_count: u16 = @intCast(state.model_ids.len);
-    // header(3) + progress panel(models + 2 for border) + log(flex) + status(1)
     const progress_height: u16 = model_count + 2;
 
     const chunks = frame.layout(area, Direction.vertical, &.{
@@ -500,7 +460,6 @@ fn renderProgressPanel(state: *RunnerState, frame: *Frame(App(RunnerState).Defau
 
         const progress = state.progress_snap.get(model_id) orelse ModelProgress{};
 
-        // Model name (left portion, up to 28 chars)
         const name = shortModelName(model_id);
         const name_width: u16 = @min(28, inner.width / 2);
         const name_style = switch (progress.status) {
@@ -511,12 +470,10 @@ fn renderProgressPanel(state: *RunnerState, frame: *Frame(App(RunnerState).Defau
         };
         buf.setString(inner.x, row, name, name_style);
 
-        // Gauge (right portion)
         const gauge_x = inner.x + name_width + 1;
         if (gauge_x >= inner.x + inner.width) continue;
         const gauge_width = inner.width - name_width - 1;
 
-        // Count label
         var count_buf: [16]u8 = undefined;
         const count_str = std.fmt.bufPrint(&count_buf, " {d}/{d}", .{
             progress.problems_done,
@@ -558,7 +515,7 @@ fn renderLogPanel(state: *RunnerState, frame: *Frame(App(RunnerState).DefaultMax
         .items = state.log_display.items,
         .scroll = &state.log_scroll,
         .style = Style.init().fg(.white),
-        .highlight_style = Style.empty, // no highlight -- just a log
+        .highlight_style = Style.empty,
         .highlight_symbol = "",
         .show_scrollbar = true,
     };
@@ -619,14 +576,9 @@ fn renderResultsStatusBar(state: *RunnerState, frame: *Frame(App(RunnerState).De
     buf.setString(area.x, area.y, status_msg, Style.init().bg(.black).fg(.white).bold());
 }
 
-// ---------------------------------------------------------------------------
-// Results formatting
-// ---------------------------------------------------------------------------
-
 fn buildResultLines(allocator: std.mem.Allocator, report: *Report) std.ArrayList([]const u8) {
     var lines: std.ArrayList([]const u8) = .empty;
 
-    // Sort results by score descending, then cost ascending
     std.mem.sort(ModelResult, report.results.items, {}, struct {
         fn lessThan(_: void, a: ModelResult, b: ModelResult) bool {
             if (a.score != b.score) return a.score > b.score;
@@ -634,7 +586,6 @@ fn buildResultLines(allocator: std.mem.Allocator, report: *Report) std.ArrayList
         }
     }.lessThan);
 
-    // Header
     const header = std.fmt.allocPrint(allocator, "  {s:<30} {s:>8} {s:>8} {s:>10} {s:>6} {s:>14}", .{
         "MODEL", "TIME", "SCORE", "COST", "LOC", "RATING",
     }) catch return lines;
@@ -670,7 +621,6 @@ fn buildResultLines(allocator: std.mem.Allocator, report: *Report) std.ArrayList
             continue;
         };
 
-        // Problem breakdown
         for (result.problems) |prob| {
             const status_str = switch (prob.status) {
                 .pass => "[pass]",
@@ -687,8 +637,7 @@ fn buildResultLines(allocator: std.mem.Allocator, report: *Report) std.ArrayList
             };
         }
 
-        // Blank separator between models
-        const blank = std.fmt.allocPrint(allocator, "", .{}) catch continue;
+        const blank = allocator.dupe(u8, " ") catch continue;
         lines.append(allocator, blank) catch {
             allocator.free(blank);
         };
@@ -696,10 +645,6 @@ fn buildResultLines(allocator: std.mem.Allocator, report: *Report) std.ArrayList
 
     return lines;
 }
-
-// ---------------------------------------------------------------------------
-// Worker task for TUI mode
-// ---------------------------------------------------------------------------
 
 const main_module = @import("../main.zig");
 
@@ -756,10 +701,6 @@ pub fn runBenchmarkTaskTui(task: *BenchmarkTaskTui) void {
     task.channel.markModelDone(task.model_id, true);
 }
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
-
 pub fn launchBenchmarkRunner(
     allocator: std.mem.Allocator,
     cfg: *Config,
@@ -774,7 +715,6 @@ pub fn launchBenchmarkRunner(
 
     const num_models = cfg.models.len;
 
-    // Create tasks
     var tasks = try allocator.alloc(BenchmarkTaskTui, num_models);
     defer allocator.free(tasks);
 
@@ -791,15 +731,11 @@ pub fn launchBenchmarkRunner(
         };
     }
 
-    // Post initial log
     channel.postLog("system", "Starting benchmark...", .info);
     for (cfg.models) |model_id| {
-        var msg_buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, "Queued for benchmark", .{}) catch "Queued";
-        channel.postLog(model_id, msg, .info);
+        channel.postLog(model_id, "Queued for benchmark", .info);
     }
 
-    // Init thread pool
     var pool: std.Thread.Pool = undefined;
     try pool.init(.{
         .allocator = allocator,
@@ -807,13 +743,11 @@ pub fn launchBenchmarkRunner(
     });
     defer pool.deinit();
 
-    // Spawn workers
     var wg: std.Thread.WaitGroup = .{};
     for (tasks) |*task| {
         pool.spawnWg(&wg, runBenchmarkTaskTui, .{task});
     }
 
-    // Create TUI state and run
     var state = RunnerState.init(allocator, &channel, cfg.models, &report);
     defer state.deinit();
 
@@ -829,26 +763,16 @@ pub fn launchBenchmarkRunner(
         std.debug.print("TUI error: {}\n", .{err});
     };
 
-    // Wait for workers after TUI exits
     wg.wait();
 
-    // Build result lines for results view (if user quit during progress,
-    // we still want to show a summary on stdout)
-    if (report.results.items.len > 0) {
-        // If user quit before seeing results, print summary to stdout
-        if (state.view_mode == .progress) {
-            var console = @import("rich_zig").Console.init(allocator);
-            defer console.deinit();
+    if (report.results.items.len > 0 and state.view_mode == .progress) {
+        var console = @import("rich_zig").Console.init(allocator);
+        defer console.deinit();
 
-            console.print("\n") catch {};
-            report.renderTable(&console) catch {};
-        }
+        console.print("\n") catch {};
+        report.renderTable(&console) catch {};
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 test "shortModelName" {
     try std.testing.expectEqualStrings("claude-3.5-sonnet", shortModelName("anthropic/claude-3.5-sonnet"));
