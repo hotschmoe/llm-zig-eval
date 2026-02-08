@@ -118,7 +118,18 @@ pub const Client = struct {
                     '\n' => try body.appendSlice(self.allocator, "\\n"),
                     '\r' => try body.appendSlice(self.allocator, "\\r"),
                     '\t' => try body.appendSlice(self.allocator, "\\t"),
-                    else => try body.append(self.allocator, c),
+                    0x08 => try body.appendSlice(self.allocator, "\\b"),
+                    0x0C => try body.appendSlice(self.allocator, "\\f"),
+                    else => {
+                        if (c < 0x20) {
+                            try body.appendSlice(self.allocator, "\\u00");
+                            const hex = "0123456789abcdef";
+                            try body.append(self.allocator, hex[c >> 4]);
+                            try body.append(self.allocator, hex[c & 0x0F]);
+                        } else {
+                            try body.append(self.allocator, c);
+                        }
+                    },
                 }
             }
             try body.append(self.allocator, '"');

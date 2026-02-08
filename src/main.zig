@@ -529,7 +529,7 @@ fn printBanner(console: *rich.Console) !void {
     ;
     const panel = rich.Panel.fromText(console.allocator, banner_text)
         .withTitle("Benchmark Suite")
-        .withSubtitle("v0.6.0")
+        .withSubtitle("v0.7.1")
         .withTitleAlignment(.center)
         .withSubtitleAlignment(.center)
         .withWidth(48)
