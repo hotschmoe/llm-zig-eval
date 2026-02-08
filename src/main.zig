@@ -509,6 +509,7 @@ fn printBanner(console: *rich.Console) !void {
     ;
     const panel = rich.Panel.fromText(console.allocator, banner_text)
         .withTitle("Benchmark Suite")
+        .withSubtitle("v0.3.0")
         .withWidth(50)
         .double();
     try console.printRenderable(panel);

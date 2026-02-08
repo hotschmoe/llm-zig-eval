@@ -324,7 +324,7 @@ fn view(state: *SelectorState, frame: *Frame(App(SelectorState).DefaultMaxWidget
         .items = state.display_items.items,
         .scroll = &state.scroll,
         .selected = state.cursor,
-        .highlight_style = Style.init().bg(.blue).fg(.white),
+        .highlight_style = Style.init().bg(.blue).fg(.white).bold(),
         .highlight_symbol = "> ",
         .show_scrollbar = true,
     };
@@ -479,6 +479,7 @@ pub fn runSelector(allocator: std.mem.Allocator, api_key: []const u8) !?[]const 
         .update = update,
         .view = view,
         .alternate_screen = true,
+        .kitty_keyboard = true,
     });
 
     app.run(allocator) catch |err| {

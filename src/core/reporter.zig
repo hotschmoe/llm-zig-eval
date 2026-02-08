@@ -95,12 +95,14 @@ pub const Report = struct {
 
         _ = table.withTitle("BENCHMARK REPORT")
             .withBoxStyle(.rounded)
-            .addColumn("MODEL")
-            .addColumn("TIME")
-            .addColumn("SCORE")
-            .addColumn("COST")
-            .addColumn("LOC")
-            .addColumn("RATING");
+            .withHeaderStyle(rich.Style.empty.bold())
+            .withColumn(rich.Column.init("MODEL").withMinWidth(20))
+            .withColumn(rich.Column.init("TIME").withJustify(.right))
+            .withColumn(rich.Column.init("SCORE").withJustify(.center))
+            .withColumn(rich.Column.init("COST").withJustify(.right))
+            .withColumn(rich.Column.init("LOC").withJustify(.right))
+            .withColumn(rich.Column.init("RATING").withJustify(.center))
+            .withCaption("SCORE = passed problems | LOC = lines of code | RATING = council score");
 
         // Add rows
         for (self.results.items) |result| {
@@ -154,7 +156,6 @@ pub const Report = struct {
         }
 
         try console.printRenderable(table);
-        try console.print("\nLegend: SCORE = passed problems, LOC = lines of code, RATING = council score");
     }
 
     /// Render report as JSON
