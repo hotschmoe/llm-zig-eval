@@ -14,7 +14,7 @@ Create a `MockSocket` struct that simulates network connections using threads.
 2. **init() MockSocket**: Returns an initialized socket in disconnected state
 
 3. **connect(self: *MockSocket, address: []const u8) !void**:
-   - Spawns a thread to simulate connection delay (100ms using `std.time.sleep`)
+   - Spawns a thread to simulate connection delay (100ms using `std.Thread.sleep`)
    - If address is "bad_host", returns `error.ConnectionRefused`
    - Sets connected state to true on success
    - Must be thread-safe

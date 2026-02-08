@@ -101,7 +101,7 @@ test "connect state is thread-safe" {
     // This should not crash or race
     var checks: usize = 0;
     while (!sock.isConnected() and checks < 100) : (checks += 1) {
-        time.sleep(10_000_000); // 10ms
+        std.Thread.sleep(10_000_000); // 10ms
     }
 
     sock.waitForConnection();
