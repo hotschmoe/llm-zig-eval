@@ -33,11 +33,12 @@
     // internet connectivity.
     .dependencies = .{
         .rich_zig = .{
-            .url = "git+https://github.com/hotschmoe/rich_zig#76c00c54af851845fc852dbba9bb8db78481e1b6",
-            .hash = "rich_zig-1.1.3-cZcAnO0XCwC3cA-2IWw-7AYNNvi2097jSj1XtzpjtOoU",
+            .url = "git+https://github.com/hotschmoe/rich_zig#e89387a8cd09cba84f0f3f5708dc70926ed2fdfe",
+            .hash = "rich_zig-1.4.1-cZcAnKdFDACT8IHmL0fvgpUUnI1rcaAP7IsB66Qh7zpY",
         },
         .zithril = .{
-            .path = "../zithril",
+            .url = "git+https://github.com/hotschmoe/zithril#ad9ed9f214242898feb7f8b8e32c95f154840618",
+            .hash = "zithril-0.18.0-2-p2iARQEADRwMOUOxCHgT8kZOebCGdI3mWaVRzMIVkE",
         },
     },
     .paths = .{
