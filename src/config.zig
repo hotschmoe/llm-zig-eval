@@ -54,6 +54,8 @@ pub const Config = struct {
     output_format: OutputFormat = .pretty,
     /// Maximum concurrent API requests
     parallel: u32 = 4,
+    /// Custom council judge model IDs (null = use defaults)
+    council_models: ?[]const []const u8 = null,
     /// OpenRouter API key
     api_key: []const u8,
     /// Allocator for dynamic allocations
@@ -69,6 +71,10 @@ pub const Config = struct {
             self.allocator.free(model);
         }
         self.allocator.free(self.models);
+        if (self.council_models) |cm| {
+            for (cm) |m| self.allocator.free(m);
+            self.allocator.free(cm);
+        }
         self.allocator.free(self.api_key);
     }
 };

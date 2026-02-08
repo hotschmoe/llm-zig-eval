@@ -44,6 +44,7 @@ const BenchmarkTask = struct {
     api_key: []const u8,
     runs: u32,
     enable_council: bool,
+    council_models: ?[]const []const u8,
     allocator: std.mem.Allocator,
     result: ?ModelResult = null,
     err: ?anyerror = null,
@@ -128,7 +129,8 @@ pub fn main() !void {
                 return err;
             },
             error.NoModelsSpecified => {
-                return launchModelSelector(allocator);
+                const has_council = hasCouncilFlag();
+                return launchModelSelector(allocator, has_council);
             },
             else => return err,
         }
@@ -159,6 +161,7 @@ fn runParallelBenchmarks(
             .api_key = cfg.api_key,
             .runs = cfg.runs,
             .enable_council = cfg.council,
+            .council_models = cfg.council_models,
             .allocator = allocator,
             .progress = progress,
         };
@@ -211,7 +214,15 @@ fn runBenchmarkTaskWrapper(task: *BenchmarkTask) void {
     var sbx = Sandbox.init(task.allocator, "out");
 
     // Create per-thread tribunal (if council enabled)
-    var tribunal = Tribunal.init(task.allocator, &client);
+    var tribunal = if (task.council_models) |cm|
+        Tribunal.initWithModels(task.allocator, &client, cm) catch {
+            task.err = error.OutOfMemory;
+            task.progress.markDone(task.allocator, task.model_id, false);
+            return;
+        }
+    else
+        Tribunal.init(task.allocator, &client);
+    defer tribunal.deinit();
 
     task.result = runModelBenchmarkWithProgress(
         task.allocator,
@@ -246,7 +257,11 @@ fn runSequentialBenchmarks(
     var sbx = Sandbox.init(allocator, "out");
 
     // Initialize tribunal for council judging (if enabled)
-    var tribunal = Tribunal.init(allocator, &client);
+    var tribunal = if (cfg.council_models) |cm|
+        try Tribunal.initWithModels(allocator, &client, cm)
+    else
+        Tribunal.init(allocator, &client);
+    defer tribunal.deinit();
 
     // Run benchmark for each model
     for (cfg.models) |model_id| {
@@ -511,7 +526,7 @@ fn printBanner(console: *rich.Console) !void {
     ;
     const panel = rich.Panel.fromText(console.allocator, banner_text)
         .withTitle("Benchmark Suite")
-        .withSubtitle("v0.3.1")
+        .withSubtitle("v0.4.0")
         .withTitleAlignment(.center)
         .withSubtitleAlignment(.center)
         .withWidth(48)
@@ -597,38 +612,61 @@ fn loadApiKey(allocator: std.mem.Allocator) ![]const u8 {
     return error.MissingApiKey;
 }
 
+/// Check if --council flag is present in process args (for pre-parse before TUI)
+fn hasCouncilFlag() bool {
+    var args = std.process.args();
+    _ = args.skip(); // program name
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--council")) return true;
+    }
+    return false;
+}
+
 /// Launch interactive model selector and run benchmark with selected models
-fn launchModelSelector(allocator: std.mem.Allocator) !void {
+fn launchModelSelector(allocator: std.mem.Allocator, council_enabled: bool) !void {
     const api_key = try loadApiKey(allocator);
     defer allocator.free(api_key);
 
-    const selected_models = model_selector.runSelector(allocator, api_key) catch |err| {
+    const result = model_selector.runSelector(allocator, api_key, council_enabled) catch |err| {
         std.debug.print("Model selector failed: {}\n", .{err});
         return err;
     };
 
-    const models = selected_models orelse {
+    const sel = result orelse {
         std.debug.print("No models selected. Exiting.\n", .{});
         return;
     };
     defer {
-        for (models) |m| allocator.free(m);
-        allocator.free(models);
+        for (sel.benchmark_models) |m| allocator.free(m);
+        allocator.free(sel.benchmark_models);
+        if (sel.council_models) |cm| {
+            for (cm) |m| allocator.free(m);
+            allocator.free(cm);
+        }
     }
 
-    if (models.len == 0) {
+    if (sel.benchmark_models.len == 0) {
         std.debug.print("No models selected. Exiting.\n", .{});
         return;
     }
 
-    std.debug.print("Selected {d} model(s). Running benchmark...\n", .{models.len});
+    const enable_council = council_enabled or sel.council_models != null;
+
+    std.debug.print("Selected {d} model(s)", .{sel.benchmark_models.len});
+    if (sel.council_models) |cm| {
+        std.debug.print(", {d} council judge(s)", .{cm.len});
+    } else if (enable_council) {
+        std.debug.print(" (council: default judges)", .{});
+    }
+    std.debug.print(". Running benchmark...\n", .{});
 
     var cfg = Config{
-        .models = models,
+        .models = sel.benchmark_models,
         .runs = 1,
-        .council = false,
+        .council = enable_council,
         .output_format = .pretty,
         .parallel = 4,
+        .council_models = sel.council_models,
         .api_key = api_key,
         .allocator = allocator,
     };

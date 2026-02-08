@@ -12,11 +12,37 @@ pub const JudgePersona = struct {
     system_prompt: []const u8,
 };
 
-/// Default judge personas
+/// Persona definition (name, focus, prompt) independent of model assignment
+pub const PersonaDef = struct {
+    name: []const u8,
+    focus: []const u8,
+    system_prompt: []const u8,
+};
+
+/// Cycling persona definitions - paired with models by index (mod 3)
+pub const JUDGE_PERSONAS = [_]PersonaDef{
+    .{
+        .name = "Pedant",
+        .focus = "Safety, defer, strict types",
+        .system_prompt = prompts.PEDANT_PROMPT,
+    },
+    .{
+        .name = "Architect",
+        .focus = "Readability, structure, logic",
+        .system_prompt = prompts.ARCHITECT_PROMPT,
+    },
+    .{
+        .name = "Hacker",
+        .focus = "Performance, cleverness, brevity",
+        .system_prompt = prompts.HACKER_PROMPT,
+    },
+};
+
+/// Default judge personas with current OpenRouter model IDs
 pub const DEFAULT_JUDGES = [_]JudgePersona{
     .{
         .name = "Pedant",
-        .model_id = "anthropic/claude-3.5-sonnet",
+        .model_id = "anthropic/claude-sonnet-4",
         .focus = "Safety, defer, strict types",
         .system_prompt = prompts.PEDANT_PROMPT,
     },
@@ -28,7 +54,7 @@ pub const DEFAULT_JUDGES = [_]JudgePersona{
     },
     .{
         .name = "Hacker",
-        .model_id = "deepseek/deepseek-coder",
+        .model_id = "deepseek/deepseek-chat-v3-0324",
         .focus = "Performance, cleverness, brevity",
         .system_prompt = prompts.HACKER_PROMPT,
     },

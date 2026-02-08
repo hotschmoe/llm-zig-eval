@@ -32,6 +32,18 @@ const Direction = zithril.Direction;
 const Key = zithril.Key;
 const KeyCode = zithril.KeyCode;
 
+/// Active selection mode in the TUI
+pub const SelectionMode = enum {
+    benchmark,
+    council,
+};
+
+/// Result returned from the model selector
+pub const SelectorResult = struct {
+    benchmark_models: []const []const u8,
+    council_models: ?[]const []const u8,
+};
+
 /// Model information fetched from OpenRouter API
 pub const ModelInfo = struct {
     id: []const u8,
@@ -40,6 +52,7 @@ pub const ModelInfo = struct {
     prompt_price: f64, // $ per 1M tokens
     completion_price: f64, // $ per 1M tokens
     selected: bool = false,
+    council_selected: bool = false,
 
     /// Format price for display (e.g. "$3" or "$0.15")
     pub fn formatPrice(price: f64, buf: []u8) []const u8 {
@@ -74,6 +87,8 @@ pub const SelectorState = struct {
     scroll: ScrollState,
     submitted: bool = false,
     quit_without_select: bool = false,
+    mode: SelectionMode = .benchmark,
+    council_enabled: bool = false,
 
     const Self = @This();
 
@@ -86,7 +101,6 @@ pub const SelectorState = struct {
             .filter_state = undefined,
             .scroll = ScrollState.init(models.len),
         };
-        self.filter_state = TextInputState.init(&self.filter_buffer);
 
         // Build initial display items and indices (all models)
         for (models, 0..) |model, i| {
@@ -96,6 +110,13 @@ pub const SelectorState = struct {
         }
 
         return self;
+    }
+
+    /// Must be called after init, once the struct is in its final memory location.
+    /// TextInputState holds a slice into filter_buffer, so this cannot be done
+    /// inside init() where the struct is on a temporary stack frame.
+    pub fn initFilterState(self: *Self) void {
+        self.filter_state = TextInputState.init(&self.filter_buffer);
     }
 
     pub fn deinit(self: *Self) void {
@@ -112,7 +133,11 @@ pub const SelectorState = struct {
         const price_str = ModelInfo.formatPrice(model.prompt_price, &price_buf);
         const ctx_str = ModelInfo.formatContext(model.context_length, &ctx_buf);
 
-        const checkbox = if (model.selected) "[x]" else "[ ]";
+        const is_checked = switch (self.mode) {
+            .benchmark => model.selected,
+            .council => model.council_selected,
+        };
+        const checkbox = if (is_checked) "[x]" else "[ ]";
 
         return try std.fmt.allocPrint(self.allocator, "{s} {s} {s} {s}", .{
             checkbox,
@@ -158,7 +183,10 @@ pub const SelectorState = struct {
     pub fn toggleSelection(self: *Self) void {
         if (self.filtered_indices.items.len == 0) return;
         const model_idx = self.filtered_indices.items[self.cursor];
-        self.models[model_idx].selected = !self.models[model_idx].selected;
+        switch (self.mode) {
+            .benchmark => self.models[model_idx].selected = !self.models[model_idx].selected,
+            .council => self.models[model_idx].council_selected = !self.models[model_idx].council_selected,
+        }
 
         // Update display item
         if (self.cursor < self.display_items.items.len) {
@@ -181,6 +209,24 @@ pub const SelectorState = struct {
         var count: usize = 0;
         for (self.models) |model| {
             if (model.selected) count += 1;
+        }
+        return count;
+    }
+
+    pub fn getCouncilModels(self: Self) ![]const []const u8 {
+        var selected: std.ArrayList([]const u8) = .empty;
+        for (self.models) |model| {
+            if (model.council_selected) {
+                try selected.append(self.allocator, try self.allocator.dupe(u8, model.id));
+            }
+        }
+        return try selected.toOwnedSlice(self.allocator);
+    }
+
+    pub fn councilCount(self: Self) usize {
+        var count: usize = 0;
+        for (self.models) |model| {
+            if (model.council_selected) count += 1;
         }
         return count;
     }
@@ -208,9 +254,6 @@ fn update(state: *SelectorState, event: Event) Action {
         else => return Action.none_action,
     };
 
-    // Kitty keyboard protocol sends press + release for each keystroke;
-    // zithril's TextInputState.handleKey does not filter by action yet,
-    // so we guard here to avoid double-processing.
     if (key.action == .release) return Action.none_action;
 
     switch (key.code) {
@@ -222,6 +265,15 @@ fn update(state: *SelectorState, event: Event) Action {
             if (state.selectedCount() > 0) {
                 state.submitted = true;
                 return Action.quit_action;
+            }
+        },
+        .tab => {
+            if (state.council_enabled) {
+                state.mode = switch (state.mode) {
+                    .benchmark => .council,
+                    .council => .benchmark,
+                };
+                state.rebuildDisplayItems() catch {};
             }
         },
         .char => |c| {
@@ -236,6 +288,11 @@ fn update(state: *SelectorState, event: Event) Action {
                 }
                 return Action.none_action;
             }
+            // Reject non-ASCII and non-printable characters
+            if (c > 0x7f) return Action.none_action;
+            const byte: u8 = @intCast(c);
+            if (!std.ascii.isPrint(byte)) return Action.none_action;
+
             if (c == ' ') {
                 state.toggleSelection();
             } else {
@@ -314,11 +371,14 @@ fn view(state: *SelectorState, frame: *Frame(App(SelectorState).DefaultMaxWidget
     };
     frame.render(filter_widget, filter_inner);
 
-    // Model list with scroll
+    // Model list with scroll - title and highlight color vary by mode
+    const is_council_mode = state.mode == .council;
+    const mode_title: []const u8 = if (is_council_mode) "Models [Council Judges]" else "Models [Benchmark]";
+
     const list_block = Block{
-        .title = "Models",
+        .title = mode_title,
         .border = BorderType.rounded,
-        .border_style = Style.init().fg(.white),
+        .border_style = if (is_council_mode) Style.init().fg(.magenta) else Style.init().fg(.white),
     };
     frame.render(list_block, chunks.get(1));
 
@@ -329,7 +389,7 @@ fn view(state: *SelectorState, frame: *Frame(App(SelectorState).DefaultMaxWidget
         .items = state.display_items.items,
         .scroll = &state.scroll,
         .selected = state.cursor,
-        .highlight_style = Style.init().bg(.blue).fg(.white).bold(),
+        .highlight_style = if (is_council_mode) Style.init().bg(.magenta).fg(.white).bold() else Style.init().bg(.blue).fg(.white).bold(),
         .highlight_symbol = "> ",
         .show_scrollbar = true,
     };
@@ -337,9 +397,15 @@ fn view(state: *SelectorState, frame: *Frame(App(SelectorState).DefaultMaxWidget
 
     // Status bar
     var status_buf: [128]u8 = undefined;
-    const status_msg = std.fmt.bufPrint(&status_buf, " Selected: {d} | space:toggle enter:run esc:quit", .{
-        state.selectedCount(),
-    }) catch " space:toggle enter:run esc:quit";
+    const status_msg = if (state.council_enabled)
+        std.fmt.bufPrint(&status_buf, " Bench: {d} | Council: {d} | tab:mode space:toggle enter:run esc:quit", .{
+            state.selectedCount(),
+            state.councilCount(),
+        }) catch " tab:mode space:toggle enter:run esc:quit"
+    else
+        std.fmt.bufPrint(&status_buf, " Selected: {d} | space:toggle enter:run esc:quit", .{
+            state.selectedCount(),
+        }) catch " space:toggle enter:run esc:quit";
 
     const status_text = zithril.widgets.Text{
         .content = status_msg,
@@ -450,10 +516,10 @@ fn parseModelsResponse(allocator: std.mem.Allocator, json_body: []const u8) ![]M
     return try models.toOwnedSlice(allocator);
 }
 
-/// Run the interactive model selector
-/// Returns selected model IDs or null if user quit without selecting
-pub fn runSelector(allocator: std.mem.Allocator, api_key: []const u8) !?[]const []const u8 {
-    // Fetch models from API
+/// Run the interactive model selector.
+/// If council_enabled is true, Tab toggles between benchmark/council selection modes.
+/// Returns SelectorResult or null if user quit without selecting.
+pub fn runSelector(allocator: std.mem.Allocator, api_key: []const u8, council_enabled: bool) !?SelectorResult {
     std.debug.print("Fetching models from OpenRouter...\n", .{});
     const models = fetchModels(allocator, api_key) catch |err| {
         std.debug.print("Failed to fetch models: {}\n", .{err});
@@ -474,17 +540,16 @@ pub fn runSelector(allocator: std.mem.Allocator, api_key: []const u8) !?[]const 
 
     std.debug.print("Found {d} models. Launching selector...\n", .{models.len});
 
-    // Initialize state - app holds a pointer, so we own and manage state directly
     var state = try SelectorState.init(allocator, models);
     defer state.deinit();
+    state.initFilterState();
+    state.council_enabled = council_enabled;
 
-    // Create and run the app (passes pointer to our state, no copying)
     var app = App(SelectorState).init(.{
         .state = &state,
         .update = update,
         .view = view,
         .alternate_screen = true,
-        .kitty_keyboard = true,
     });
 
     app.run(allocator) catch |err| {
@@ -497,7 +562,15 @@ pub fn runSelector(allocator: std.mem.Allocator, api_key: []const u8) !?[]const 
     }
 
     if (state.submitted) {
-        return try state.getSelectedModels();
+        const bench = try state.getSelectedModels();
+        const council = if (council_enabled and state.councilCount() > 0)
+            try state.getCouncilModels()
+        else
+            null;
+        return SelectorResult{
+            .benchmark_models = bench,
+            .council_models = council,
+        };
     }
 
     return null;
