@@ -208,6 +208,11 @@ fn update(state: *SelectorState, event: Event) Action {
         else => return Action.none_action,
     };
 
+    // Kitty keyboard protocol sends press + release for each keystroke;
+    // zithril's TextInputState.handleKey does not filter by action yet,
+    // so we guard here to avoid double-processing.
+    if (key.action == .release) return Action.none_action;
+
     switch (key.code) {
         .escape => {
             state.quit_without_select = true;

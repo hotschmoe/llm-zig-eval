@@ -503,14 +503,18 @@ fn runModelBenchmarkCore(
 
 fn printBanner(console: *rich.Console) !void {
     const banner_text =
-        \\LLM  ZIG  EVAL
         \\
-        \\Find which LLM writes the best Zig code.
+        \\  L L M   |   Z I G   |   E V A L
+        \\
+        \\  Find which LLM writes the best Zig code.
+        \\
     ;
     const panel = rich.Panel.fromText(console.allocator, banner_text)
         .withTitle("Benchmark Suite")
-        .withSubtitle("v0.3.0")
-        .withWidth(50)
+        .withSubtitle("v0.3.1")
+        .withTitleAlignment(.center)
+        .withSubtitleAlignment(.center)
+        .withWidth(48)
         .double();
     try console.printRenderable(panel);
 }
@@ -523,11 +527,12 @@ fn printResultPanel(console: *rich.Console, model_id: []const u8, score: u32, to
         total,
     }) catch "Completed";
 
-    const panel = blk: {
+    const base = blk: {
         if (score == total) break :blk rich.Panel.success(console.allocator, panel_msg);
         if (score > 0) break :blk rich.Panel.warning(console.allocator, panel_msg);
         break :blk rich.Panel.err(console.allocator, panel_msg);
     };
+    const panel = base.withWidth(@min(panel_msg.len + 6, 52));
 
     try console.printRenderable(panel);
 }
