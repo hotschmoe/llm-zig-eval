@@ -5,6 +5,7 @@ const std = @import("std");
 const rich = @import("rich_zig");
 const lib = @import("llm_zig_eval");
 const model_selector = @import("tui/model_selector.zig");
+const benchmark_runner = @import("tui/benchmark_runner.zig");
 
 const Config = lib.Config;
 const Client = lib.Client;
@@ -25,6 +26,9 @@ const sandbox = lib.sandbox;
 const tokens = lib.tokens;
 const config = lib.config;
 
+pub const ProgressCallback = benchmark_runner.ProgressCallback;
+pub const LogLevel = benchmark_runner.LogLevel;
+
 const SYSTEM_PROMPT =
     \\You are an expert Zig 0.15 programmer. Provide only the requested code in a single ```zig code block. No explanations outside the code.
     \\
@@ -38,7 +42,7 @@ const SYSTEM_PROMPT =
 
 const MAX_RETRIES: u32 = 4;
 
-/// Task context for parallel benchmark execution
+/// Task context for classic (non-TUI) parallel benchmark execution
 const BenchmarkTask = struct {
     model_id: []const u8,
     api_key: []const u8,
@@ -48,49 +52,6 @@ const BenchmarkTask = struct {
     allocator: std.mem.Allocator,
     result: ?ModelResult = null,
     err: ?anyerror = null,
-    progress: *ProgressState,
-};
-
-/// Shared progress state for UI updates
-const ProgressState = struct {
-    mutex: std.Thread.Mutex = .{},
-    model_status: std.StringHashMapUnmanaged(ModelProgress),
-
-    const ModelProgress = struct {
-        current_problem: []const u8 = "",
-        problems_done: u32 = 0,
-        total_problems: u32 = 0,
-        status: Status = .pending,
-
-        const Status = enum { pending, running, done, failed };
-    };
-
-    fn init() ProgressState {
-        return .{ .model_status = .empty };
-    }
-
-    fn deinit(self: *ProgressState, allocator: std.mem.Allocator) void {
-        self.model_status.deinit(allocator);
-    }
-
-    fn update(self: *ProgressState, allocator: std.mem.Allocator, model_id: []const u8, problem_name: []const u8, done: u32, total: u32) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const gop = self.model_status.getOrPut(allocator, model_id) catch return;
-        gop.value_ptr.* = .{
-            .current_problem = problem_name,
-            .problems_done = done,
-            .total_problems = total,
-            .status = .running,
-        };
-    }
-
-    fn markDone(self: *ProgressState, allocator: std.mem.Allocator, model_id: []const u8, success: bool) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const gop = self.model_status.getOrPut(allocator, model_id) catch return;
-        gop.value_ptr.status = if (success) .done else .failed;
-    }
 };
 
 /// Tracks a passed solution for council judging
@@ -140,21 +101,68 @@ pub fn main() !void {
     try runBenchmarkSuite(allocator, &cfg);
 }
 
-/// Run benchmarks in parallel using thread pool
+// ---------------------------------------------------------------------------
+// Benchmark suite entry -- routes to TUI or classic depending on output format
+// ---------------------------------------------------------------------------
+
+fn runBenchmarkSuite(allocator: std.mem.Allocator, cfg: *Config) !void {
+    switch (cfg.output_format) {
+        .pretty => try benchmark_runner.launchBenchmarkRunner(allocator, cfg),
+        .json => try runBenchmarkSuiteClassic(allocator, cfg),
+    }
+}
+
+/// Classic stdout-based benchmark execution (used for JSON output)
+fn runBenchmarkSuiteClassic(allocator: std.mem.Allocator, cfg: *Config) !void {
+    var console = rich.Console.init(allocator);
+    defer console.deinit();
+
+    try printBanner(&console);
+
+    var report = Report.init(allocator);
+    defer report.deinit();
+
+    var ts_report = ThreadSafeReport.init(&report);
+
+    const num_models = cfg.models.len;
+    const effective_parallel = @min(cfg.parallel, @as(u32, @intCast(num_models)));
+
+    try console.print("\n");
+    var info_buf: [128]u8 = undefined;
+    const info_msg = std.fmt.bufPrint(&info_buf, "Benchmarking {d} model(s) with parallelism={d}\n", .{ num_models, effective_parallel }) catch "Benchmarking...\n";
+    try console.print(info_msg);
+
+    const use_parallel = effective_parallel > 1 and num_models > 1;
+    if (use_parallel) {
+        try runParallelBenchmarks(allocator, cfg, &ts_report, &console);
+    } else {
+        try runSequentialBenchmarks(allocator, cfg, &report, &console);
+    }
+
+    try console.print("\n");
+    // Classic path always renders JSON (that's why we're here)
+    const stdout_file = std.fs.File.stdout();
+    var buf: [4096]u8 = undefined;
+    var stdout = stdout_file.writer(&buf);
+    try report.renderJson(&stdout.interface);
+    try stdout.interface.flush();
+}
+
+// ---------------------------------------------------------------------------
+// Classic parallel / sequential runners (for JSON output path)
+// ---------------------------------------------------------------------------
+
 fn runParallelBenchmarks(
     allocator: std.mem.Allocator,
     cfg: *Config,
     ts_report: *ThreadSafeReport,
-    progress: *ProgressState,
     console: *rich.Console,
 ) !void {
     const num_models = cfg.models.len;
 
-    // Allocate task array
     var tasks = try allocator.alloc(BenchmarkTask, num_models);
     defer allocator.free(tasks);
 
-    // Initialize tasks
     for (cfg.models, 0..) |model_id, i| {
         tasks[i] = .{
             .model_id = model_id,
@@ -163,11 +171,9 @@ fn runParallelBenchmarks(
             .enable_council = cfg.council,
             .council_models = cfg.council_models,
             .allocator = allocator,
-            .progress = progress,
         };
     }
 
-    // Initialize thread pool
     var pool: std.Thread.Pool = undefined;
     try pool.init(.{
         .allocator = allocator,
@@ -175,16 +181,13 @@ fn runParallelBenchmarks(
     });
     defer pool.deinit();
 
-    // Spawn tasks
     var wg: std.Thread.WaitGroup = .{};
     for (tasks) |*task| {
         pool.spawnWg(&wg, runBenchmarkTaskWrapper, .{task});
     }
 
-    // Wait for all tasks to complete
     wg.wait();
 
-    // Collect results
     var success_count: u32 = 0;
     var fail_count: u32 = 0;
 
@@ -204,27 +207,24 @@ fn runParallelBenchmarks(
     try console.print(summary);
 }
 
-/// Wrapper function for thread pool execution
 fn runBenchmarkTaskWrapper(task: *BenchmarkTask) void {
-    // Create per-thread HTTP client (std.http.Client is NOT thread-safe)
     var client = Client.init(task.allocator, task.api_key);
     defer client.deinit();
 
-    // Create per-thread sandbox
     var sbx = Sandbox.init(task.allocator, "out");
 
-    // Create per-thread tribunal (if council enabled)
     var tribunal = if (task.council_models) |cm|
         Tribunal.initWithModels(task.allocator, &client, cm) catch {
             task.err = error.OutOfMemory;
-            task.progress.markDone(task.allocator, task.model_id, false);
             return;
         }
     else
         Tribunal.init(task.allocator, &client);
     defer tribunal.deinit();
 
-    task.result = runModelBenchmarkWithProgress(
+    const cb = ProgressCallback{ .stdout = .{ .verbose = false } };
+
+    task.result = runModelBenchmarkCore(
         task.allocator,
         &client,
         &sbx,
@@ -232,45 +232,39 @@ fn runBenchmarkTaskWrapper(task: *BenchmarkTask) void {
         task.model_id,
         task.runs,
         task.enable_council,
-        task.progress,
+        cb,
     ) catch |err| {
         task.err = err;
-        task.progress.markDone(task.allocator, task.model_id, false);
         return;
     };
-
-    task.progress.markDone(task.allocator, task.model_id, true);
 }
 
-/// Run benchmarks sequentially (original behavior)
 fn runSequentialBenchmarks(
     allocator: std.mem.Allocator,
     cfg: *Config,
     report: *Report,
     console: *rich.Console,
 ) !void {
-    // Initialize OpenRouter client
     var client = Client.init(allocator, cfg.api_key);
     defer client.deinit();
 
-    // Initialize sandbox
     var sbx = Sandbox.init(allocator, "out");
 
-    // Initialize tribunal for council judging (if enabled)
     var tribunal = if (cfg.council_models) |cm|
         try Tribunal.initWithModels(allocator, &client, cm)
     else
         Tribunal.init(allocator, &client);
     defer tribunal.deinit();
 
-    // Run benchmark for each model
+    const cb = ProgressCallback{ .stdout = .{ .verbose = true } };
+
     for (cfg.models) |model_id| {
         try console.print("\n");
         var model_buf: [128]u8 = undefined;
         const model_msg = std.fmt.bufPrint(&model_buf, "[bold]Benchmarking:[/] {s}\n", .{model_id}) catch "Benchmarking...\n";
         try console.print(model_msg);
 
-        const model_result = try runModelBenchmark(
+        const model_result = try runModelBenchmarkCore(
             allocator,
             &client,
             &sbx,
@@ -278,6 +272,7 @@ fn runSequentialBenchmarks(
             model_id,
             cfg.runs,
             cfg.council,
+            cb,
         );
 
         try report.addResult(model_result);
@@ -285,22 +280,11 @@ fn runSequentialBenchmarks(
     }
 }
 
-/// Run model benchmark with progress updates (for parallel execution)
-fn runModelBenchmarkWithProgress(
-    allocator: std.mem.Allocator,
-    client: *Client,
-    sbx: *Sandbox,
-    tribunal: *Tribunal,
-    model_id: []const u8,
-    runs: u32,
-    enable_council: bool,
-    progress: *ProgressState,
-) !ModelResult {
-    return runModelBenchmarkCore(allocator, client, sbx, tribunal, model_id, runs, enable_council, progress, false);
-}
+// ---------------------------------------------------------------------------
+// Core benchmark logic for a single model
+// ---------------------------------------------------------------------------
 
-/// Run model benchmark with console output (for sequential execution)
-fn runModelBenchmark(
+pub fn runModelBenchmarkCore(
     allocator: std.mem.Allocator,
     client: *Client,
     sbx: *Sandbox,
@@ -308,21 +292,7 @@ fn runModelBenchmark(
     model_id: []const u8,
     runs: u32,
     enable_council: bool,
-) !ModelResult {
-    return runModelBenchmarkCore(allocator, client, sbx, tribunal, model_id, runs, enable_council, null, true);
-}
-
-/// Core benchmark logic for a single model
-fn runModelBenchmarkCore(
-    allocator: std.mem.Allocator,
-    client: *Client,
-    sbx: *Sandbox,
-    tribunal: *Tribunal,
-    model_id: []const u8,
-    runs: u32,
-    enable_council: bool,
-    progress: ?*ProgressState,
-    verbose: bool,
+    cb: ProgressCallback,
 ) !ModelResult {
     var problem_results: std.ArrayList(ProblemResult) = .empty;
     errdefer problem_results.deinit(allocator);
@@ -345,13 +315,14 @@ fn runModelBenchmarkCore(
 
     const total_problems: u32 = @intCast(PROBLEMS.len);
 
+    cb.onLog(model_id, "Starting benchmark", .info);
+
     for (PROBLEMS, 0..) |problem, idx| {
-        if (progress) |p| {
-            p.update(allocator, model_id, problem.name, @intCast(idx), total_problems);
-        }
-        if (verbose) {
-            std.debug.print("  |-- {s}... ", .{problem.name});
-        }
+        cb.onProgress(model_id, problem.name, @intCast(idx), total_problems);
+
+        var log_buf: [128]u8 = undefined;
+        const start_msg = std.fmt.bufPrint(&log_buf, "{s} ...", .{problem.name}) catch problem.name;
+        cb.onLog(model_id, start_msg, .info);
 
         const prompt = try sandbox.loadProblemPrompt(allocator, problem);
         errdefer allocator.free(prompt);
@@ -377,7 +348,12 @@ fn runModelBenchmarkCore(
 
             var retry: u32 = 0;
             while (retry < MAX_RETRIES) : (retry += 1) {
-                var response = try client.sendChatCompletion(model_id, conversation.items);
+                var response = client.sendChatCompletion(model_id, conversation.items) catch |err| {
+                    var err_buf: [128]u8 = undefined;
+                    const err_msg = std.fmt.bufPrint(&err_buf, "API error: {}", .{err}) catch "API error";
+                    cb.onLog(model_id, err_msg, .err);
+                    return err;
+                };
                 defer response.deinit(allocator);
 
                 problem_time_ms += response.response_time_ms;
@@ -388,7 +364,7 @@ fn runModelBenchmarkCore(
                 });
 
                 const code = try parser.extractZigCode(allocator, response.content) orelse {
-                    if (verbose) std.debug.print("(no code) ", .{});
+                    cb.onLog(model_id, "No code block in response", .warn);
                     break;
                 };
 
@@ -404,6 +380,13 @@ fn runModelBenchmarkCore(
                     best_loc = parser.countLoc(code);
                     best_code = code;
                     retries_used = retry;
+
+                    var pass_buf: [128]u8 = undefined;
+                    const pass_msg = if (retry > 0)
+                        std.fmt.bufPrint(&pass_buf, "{s} PASS (retry {d})", .{ problem.name, retry }) catch "PASS"
+                    else
+                        std.fmt.bufPrint(&pass_buf, "{s} PASS", .{problem.name}) catch "PASS";
+                    cb.onLog(model_id, pass_msg, .success);
                     break;
                 }
 
@@ -417,7 +400,19 @@ fn runModelBenchmarkCore(
                 }
 
                 if (retry + 1 < MAX_RETRIES and test_result.stderr.len > 0) {
-                    if (verbose) std.debug.print("(retry {d}) ", .{retry + 1});
+                    var retry_buf: [128]u8 = undefined;
+                    const status_tag = switch (test_result.status) {
+                        .compile_error => "compile error",
+                        .test_error => "test error",
+                        .timeout => "timeout",
+                        .pass => "pass",
+                    };
+                    const retry_msg = std.fmt.bufPrint(&retry_buf, "{s} {s}, retry {d}", .{
+                        problem.name,
+                        status_tag,
+                        retry + 1,
+                    }) catch "retrying";
+                    cb.onLog(model_id, retry_msg, .warn);
 
                     const assistant_msg = try allocator.dupe(u8, response.content);
                     try allocated_msgs.append(allocator, assistant_msg);
@@ -437,14 +432,17 @@ fn runModelBenchmarkCore(
             }
         }
 
-        if (verbose) {
-            const status_str = switch (best_status) {
-                .pass => "[PASS]",
-                .compile_error => "[FAIL compile]",
-                .test_error => "[FAIL test]",
-                .timeout => "[FAIL timeout]",
+        // Log final status if not already logged as PASS
+        if (best_status != .pass) {
+            var fail_buf: [128]u8 = undefined;
+            const fail_tag = switch (best_status) {
+                .compile_error => "FAIL (compile)",
+                .test_error => "FAIL (test)",
+                .timeout => "FAIL (timeout)",
+                .pass => unreachable,
             };
-            std.debug.print("{s}\n", .{status_str});
+            const fail_msg = std.fmt.bufPrint(&fail_buf, "{s} {s}", .{ problem.name, fail_tag }) catch "FAIL";
+            cb.onLog(model_id, fail_msg, .err);
         }
 
         if (best_status == .pass) {
@@ -474,22 +472,22 @@ fn runModelBenchmarkCore(
         });
     }
 
-    if (progress) |p| {
-        p.update(allocator, model_id, "done", total_problems, total_problems);
-    }
+    cb.onProgress(model_id, "done", total_problems, total_problems);
 
     const cost = tokens.calculateCost(model_id, total_usage);
 
     var rating: ?[]const u8 = null;
     if (enable_council and passed_solutions.items.len > 0) {
-        if (verbose) std.debug.print("  `-- Council judging...\n", .{});
+        cb.onLog(model_id, "Council judging...", .info);
 
         var total_score: f32 = 0;
         var judged_count: u32 = 0;
 
         for (passed_solutions.items) |sol| {
             var consensus = tribunal.convene(sol.prompt, sol.code) catch |err| {
-                if (verbose) std.debug.print("    ! Council error: {}\n", .{err});
+                var judge_err_buf: [128]u8 = undefined;
+                const judge_err = std.fmt.bufPrint(&judge_err_buf, "Council error: {}", .{err}) catch "Council error";
+                cb.onLog(model_id, judge_err, .warn);
                 continue;
             };
             defer consensus.deinit();
@@ -501,8 +499,15 @@ fn runModelBenchmarkCore(
             const avg_score = total_score / @as(f32, @floatFromInt(judged_count));
             const rating_enum = ConsensusResult.Rating.fromScore(avg_score);
             rating = try std.fmt.allocPrint(allocator, "{s} ({d:.1})", .{ rating_enum.toString(), avg_score });
+
+            var rating_buf: [128]u8 = undefined;
+            const rating_msg = std.fmt.bufPrint(&rating_buf, "Council rating: {s} ({d:.1})", .{ rating_enum.toString(), avg_score }) catch "Council rated";
+            cb.onLog(model_id, rating_msg, .success);
         }
     }
+
+    cb.onLog(model_id, "Complete", .success);
+    cb.onDone(model_id, true);
 
     return ModelResult{
         .model_id = model_id,
@@ -516,6 +521,10 @@ fn runModelBenchmarkCore(
     };
 }
 
+// ---------------------------------------------------------------------------
+// Banner / result panels (used by classic path)
+// ---------------------------------------------------------------------------
+
 fn printBanner(console: *rich.Console) !void {
     const banner_text =
         \\
@@ -526,7 +535,7 @@ fn printBanner(console: *rich.Console) !void {
     ;
     const panel = rich.Panel.fromText(console.allocator, banner_text)
         .withTitle("Benchmark Suite")
-        .withSubtitle("v0.4.0")
+        .withSubtitle("v0.5.0")
         .withTitleAlignment(.center)
         .withSubtitleAlignment(.center)
         .withWidth(48)
@@ -552,60 +561,19 @@ fn printResultPanel(console: *rich.Console, model_id: []const u8, score: u32, to
     try console.printRenderable(panel);
 }
 
-/// Core benchmark execution - runs the benchmark suite with given config
-fn runBenchmarkSuite(allocator: std.mem.Allocator, cfg: *Config) !void {
-    var console = rich.Console.init(allocator);
-    defer console.deinit();
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-    try printBanner(&console);
-
-    var report = Report.init(allocator);
-    defer report.deinit();
-
-    var ts_report = ThreadSafeReport.init(&report);
-
-    var progress = ProgressState.init();
-    defer progress.deinit(allocator);
-
-    const num_models = cfg.models.len;
-    const effective_parallel = @min(cfg.parallel, @as(u32, @intCast(num_models)));
-
-    try console.print("\n");
-    var info_buf: [128]u8 = undefined;
-    const info_msg = std.fmt.bufPrint(&info_buf, "Benchmarking {d} model(s) with parallelism={d}\n", .{ num_models, effective_parallel }) catch "Benchmarking...\n";
-    try console.print(info_msg);
-
-    const use_parallel = effective_parallel > 1 and num_models > 1;
-    if (use_parallel) {
-        try runParallelBenchmarks(allocator, cfg, &ts_report, &progress, &console);
-    } else {
-        try runSequentialBenchmarks(allocator, cfg, &report, &console);
-    }
-
-    try console.print("\n");
-    switch (cfg.output_format) {
-        .pretty => try report.renderTable(&console),
-        .json => {
-            const stdout_file = std.fs.File.stdout();
-            var buf: [4096]u8 = undefined;
-            var stdout = stdout_file.writer(&buf);
-            try report.renderJson(&stdout.interface);
-            try stdout.interface.flush();
-        },
-    }
-}
-
-/// Check if --council flag is present in process args (for pre-parse before TUI)
 fn hasCouncilFlag() bool {
     var args = std.process.args();
-    _ = args.skip(); // program name
+    _ = args.skip();
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--council")) return true;
     }
     return false;
 }
 
-/// Launch interactive model selector and run benchmark with selected models
 fn launchModelSelector(allocator: std.mem.Allocator, council_enabled: bool) !void {
     const api_key = try config.loadApiKey(allocator);
     defer allocator.free(api_key);
