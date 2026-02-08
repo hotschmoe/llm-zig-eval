@@ -433,7 +433,7 @@ fn renderResultsView(state: *RunnerState, frame: *Frame(App(RunnerState).Default
 
 fn renderHeader(frame: *Frame(App(RunnerState).DefaultMaxWidgets), area: Rect) void {
     const header_block = Block{
-        .title = " LLM | ZIG | EVAL v0.5.0 ",
+        .title = " LLM | ZIG | EVAL v0.6.0 ",
         .title_alignment = .center,
         .border = BorderType.double,
         .border_style = Style.init().fg(.cyan).bold(),

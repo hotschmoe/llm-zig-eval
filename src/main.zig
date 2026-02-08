@@ -19,6 +19,7 @@ const SandboxResult = lib.SandboxResult;
 const TokenUsage = lib.TokenUsage;
 const PROBLEMS = lib.PROBLEMS;
 const Tribunal = lib.Tribunal;
+const TribunalLogger = lib.TribunalLogger;
 const ConsensusResult = lib.ConsensusResult;
 
 const parser = lib.parser;
@@ -462,6 +463,21 @@ pub fn runModelBenchmarkCore(
     if (enable_council and passed_solutions.items.len > 0) {
         cb.onLog(model_id, "Council judging...", .info);
 
+        const LogCtx = struct {
+            mid: []const u8,
+            progress: ProgressCallback,
+        };
+        var log_ctx = LogCtx{ .mid = model_id, .progress = cb };
+        tribunal.logger = .{
+            .ctx = @ptrCast(&log_ctx),
+            .log_fn = struct {
+                fn f(ctx: *anyopaque, msg: []const u8) void {
+                    const c: *LogCtx = @ptrCast(@alignCast(ctx));
+                    c.progress.onLog(c.mid, msg, .info);
+                }
+            }.f,
+        };
+
         var total_score: f32 = 0;
         var judged_count: u32 = 0;
 
@@ -513,7 +529,7 @@ fn printBanner(console: *rich.Console) !void {
     ;
     const panel = rich.Panel.fromText(console.allocator, banner_text)
         .withTitle("Benchmark Suite")
-        .withSubtitle("v0.5.0")
+        .withSubtitle("v0.6.0")
         .withTitleAlignment(.center)
         .withSubtitleAlignment(.center)
         .withWidth(48)

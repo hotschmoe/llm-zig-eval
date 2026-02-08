@@ -47,6 +47,7 @@ pub const ApiError = error{
     ApiServerError,
     NoContent,
     InvalidResponse,
+    RequestTimeout,
 };
 
 /// OpenRouter client
@@ -54,6 +55,7 @@ pub const Client = struct {
     allocator: std.mem.Allocator,
     api_key: []const u8,
     http_client: std.http.Client,
+    request_timeout_s: isize = 120,
 
     pub fn init(allocator: std.mem.Allocator, api_key: []const u8) Client {
         return .{
@@ -129,44 +131,84 @@ pub const Client = struct {
     }
 
     fn makeRequest(self: *Client, body: []const u8) ![]u8 {
-        // Build authorization header
         const auth_header = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{self.api_key});
         defer self.allocator.free(auth_header);
 
-        // Prepare response body buffer using Zig 0.15 Writer.Allocating
-        var response_writer: std.Io.Writer.Allocating = .init(self.allocator);
-        errdefer response_writer.deinit();
+        const uri = try std.Uri.parse(OPENROUTER_API_URL);
 
-        // Use fetch API - Zig 0.15 style
-        const result = try self.http_client.fetch(.{
-            .location = .{ .url = OPENROUTER_API_URL },
-            .method = .POST,
+        var req = try self.http_client.request(.POST, uri, .{
+            .redirect_behavior = .unhandled,
             .extra_headers = &.{
                 .{ .name = "Content-Type", .value = "application/json" },
                 .{ .name = "Authorization", .value = auth_header },
                 .{ .name = "HTTP-Referer", .value = "https://github.com/hotschmoe/llm-zig-eval" },
                 .{ .name = "X-Title", .value = "llm-zig-eval" },
             },
-            .payload = body,
-            .response_writer = &response_writer.writer,
         });
+        defer req.deinit();
 
-        // Check status code
-        if (result.status != .ok) {
-            std.debug.print("HTTP Error: {d} ({s})\n", .{ @intFromEnum(result.status), @tagName(result.status) });
-            // Print response body for debugging
-            const body_slice = response_writer.written();
-            if (body_slice.len > 0) {
-                std.debug.print("Response: {s}\n", .{body_slice[0..@min(body_slice.len, 500)]});
+        if (req.connection) |conn| {
+            applySocketTimeout(conn.stream_reader.getStream().handle, self.request_timeout_s);
+        }
+
+        req.transfer_encoding = .{ .content_length = body.len };
+        var body_writer = try req.sendBodyUnflushed(&.{});
+        try body_writer.writer.writeAll(body);
+        try body_writer.end();
+        try req.connection.?.flush();
+
+        var response = req.receiveHead(&.{}) catch |err| {
+            if (isTimeoutError(err)) return ApiError.RequestTimeout;
+            return err;
+        };
+
+        var response_buf: std.Io.Writer.Allocating = .init(self.allocator);
+        errdefer response_buf.deinit();
+
+        var transfer_buffer: [64]u8 = undefined;
+        var decompress: std.http.Decompress = undefined;
+        const decompress_buffer: []u8 = switch (response.head.content_encoding) {
+            .identity => &.{},
+            .zstd => try self.allocator.alloc(u8, std.compress.zstd.default_window_len),
+            .deflate, .gzip => try self.allocator.alloc(u8, std.compress.flate.max_window_len),
+            .compress => return ApiError.HttpError,
+        };
+        defer if (decompress_buffer.len > 0) self.allocator.free(decompress_buffer);
+
+        const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+        _ = reader.streamRemaining(&response_buf.writer) catch |err| {
+            if (response.bodyErr()) |_| return ApiError.RequestTimeout;
+            return err;
+        };
+
+        if (response.head.status != .ok) {
+            std.debug.print("HTTP Error: {d} ({s})\n", .{ @intFromEnum(response.head.status), @tagName(response.head.status) });
+            const resp_slice = response_buf.written();
+            if (resp_slice.len > 0) {
+                std.debug.print("Response: {s}\n", .{resp_slice[0..@min(resp_slice.len, 500)]});
             }
-            return switch (result.status) {
+            return switch (response.head.status) {
                 .unauthorized => ApiError.ApiUnauthorized,
                 .too_many_requests => ApiError.ApiRateLimited,
-                else => if (@intFromEnum(result.status) >= 500) ApiError.ApiServerError else ApiError.HttpError,
+                else => if (@intFromEnum(response.head.status) >= 500) ApiError.ApiServerError else ApiError.HttpError,
             };
         }
 
-        return try response_writer.toOwnedSlice();
+        return try response_buf.toOwnedSlice();
+    }
+
+    fn applySocketTimeout(fd: std.net.Stream.Handle, timeout_s: isize) void {
+        const timeout: std.posix.timeval = .{ .sec = timeout_s, .usec = 0 };
+        const timeout_bytes = std.mem.asBytes(&timeout);
+        std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, timeout_bytes) catch {};
+        std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, timeout_bytes) catch {};
+    }
+
+    fn isTimeoutError(err: anytype) bool {
+        return switch (err) {
+            error.ReadFailed, error.ConnectionTimedOut => true,
+            else => false,
+        };
     }
 
     fn parseResponse(self: *Client, response: []const u8, response_time_ms: i64) !ChatResponse {

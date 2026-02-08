@@ -34,6 +34,7 @@ pub const SandboxResult = sandbox.SandboxResult;
 pub const Problem = sandbox.Problem;
 pub const PROBLEMS = sandbox.PROBLEMS;
 pub const Tribunal = tribunal.Tribunal;
+pub const TribunalLogger = tribunal.Logger;
 pub const ConsensusResult = council_types.ConsensusResult;
 
 // Tests

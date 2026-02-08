@@ -8,11 +8,21 @@ const std = @import("std");
 const types = @import("types.zig");
 const openrouter = @import("../gateways/openrouter.zig");
 
+pub const Logger = struct {
+    ctx: *anyopaque,
+    log_fn: *const fn (ctx: *anyopaque, msg: []const u8) void,
+
+    pub fn log(self: Logger, msg: []const u8) void {
+        self.log_fn(self.ctx, msg);
+    }
+};
+
 pub const Tribunal = struct {
     allocator: std.mem.Allocator,
     client: *openrouter.Client,
     judges: []const types.JudgePersona,
     custom_judges: ?[]types.JudgePersona = null,
+    logger: ?Logger = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -56,6 +66,14 @@ pub const Tribunal = struct {
         }
     }
 
+    fn logFmt(self: *Tribunal, comptime fmt: []const u8, args: anytype) void {
+        if (self.logger) |logger| {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+            logger.log(msg);
+        }
+    }
+
     /// Convene the council to judge a solution.
     /// Phase 1: Each judge evaluates independently (blind).
     /// Phase 2: Judges see all Phase 1 verdicts and may revise scores.
@@ -73,8 +91,10 @@ pub const Tribunal = struct {
         }
 
         for (self.judges) |judge| {
+            self.logFmt("Phase 1: {s} ({s})...", .{ judge.name, judge.model_id });
             const verdict = try self.getJudgeVerdict(judge, problem_description, solution_code, null);
             try phase1.append(self.allocator, verdict);
+            self.logFmt("Phase 1: {s} done", .{judge.name});
         }
 
         // Phase 2: Cross-pollination - judges revise after seeing others' rationale
@@ -85,8 +105,10 @@ pub const Tribunal = struct {
         }
 
         for (self.judges) |judge| {
+            self.logFmt("Phase 2: {s} ({s})...", .{ judge.name, judge.model_id });
             const verdict = try self.getJudgeVerdict(judge, problem_description, solution_code, phase1.items);
             try phase2.append(self.allocator, verdict);
+            self.logFmt("Phase 2: {s} done", .{judge.name});
         }
 
         // Calculate consensus from Phase 2 (revised) verdicts
